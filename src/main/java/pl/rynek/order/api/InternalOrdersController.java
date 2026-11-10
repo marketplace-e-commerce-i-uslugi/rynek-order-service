@@ -2,10 +2,13 @@ package pl.rynek.order.api;
 
 import java.util.UUID;
 
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import pl.rynek.order.api.dto.OrderResponse;
+import pl.rynek.order.orders.Order;
 import pl.rynek.order.orders.OrderService;
 
 @RestController
@@ -20,11 +23,28 @@ public class InternalOrdersController {
     }
 
     /**
+     * Kwota, status i kupujący przed rozpoczęciem płatności (payment-service). {@code status} to nazwa stałej,
+     * np. {@code AWAITING_PAYMENT}. Dostęp: int.
+     */
+    @GetMapping("/internal/orders/{orderId}")
+    public InternalOrder getOrder(@PathVariable UUID orderId) {
+        Order o = orders.internal(orderId);
+        return new InternalOrder(o.getId(), "#" + o.getNumber(), o.getBuyerId(), o.getSellerId(), o.getStatus().name(),
+                o.getItemsTotal() + o.getShippingTotal());
+    }
+
+    /**
      * Oznaczenie jako opłacone (po zdarzeniu z płatności): „Oczekuje na płatność” → „Do wysłania”. Ponowienie nic nie
-     * zmienia, anulowane daje 409. Dostęp: int.
+     * zmienia, anulowane daje 409. Ciało {@code {paymentId}} jest opcjonalne (płatność do zwrotu środków). Dostęp: int.
      */
     @PostMapping("/internal/orders/{orderId}/mark-paid")
-    public OrderResponse markPaid(@PathVariable UUID orderId) {
-        return views.one(orders.markPaid(orderId));
+    public OrderResponse markPaid(@PathVariable UUID orderId, @RequestBody(required = false) MarkPaidRequest request) {
+        return views.one(orders.markPaid(orderId, request == null ? null : request.paymentId()));
+    }
+
+    public record InternalOrder(UUID id, String number, UUID buyerId, UUID sellerId, String status, long total) {
+    }
+
+    public record MarkPaidRequest(UUID paymentId) {
     }
 }

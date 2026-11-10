@@ -86,6 +86,9 @@ public class Order {
     @Column(name = "tracking_number")
     private String trackingNumber;
 
+    @Column(name = "payment_id")
+    private UUID paymentId;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -134,19 +137,23 @@ public class Order {
         moveTo(OrderStatus.AWAITING_PAYMENT, now);
     }
 
-    void markPaid(Instant now) {
+    void markPaid(UUID paymentId, Instant now) {
         if (status == OrderStatus.CANCELLED) {
             throw conflict("Zamówienie zostało anulowane, więc nie można go opłacić.");
         }
         if (status == OrderStatus.AWAITING_PAYMENT) {
+            this.paymentId = paymentId;
             moveTo(OrderStatus.TO_SHIP, now);
         }
     }
 
     void cancel(Instant now) {
         if (!status.cancellable()) {
-            throw conflict(status == OrderStatus.CANCELLED ? "Zamówienie jest już anulowane."
-                    : "Zamówienia w statusie „" + status.label() + "” nie można anulować.");
+            throw conflict(switch (status) {
+                case CANCELLED -> "Zamówienie jest już anulowane.";
+                case TO_SHIP -> "Opłaconego zamówienia nie można na razie anulować, bo nie obsługujemy jeszcze zwrotów pieniędzy.";
+                default -> "Zamówienia w statusie „" + status.label() + "” nie można anulować.";
+            });
         }
         moveTo(OrderStatus.CANCELLED, now);
     }
@@ -227,6 +234,10 @@ public class Order {
 
     public Address getAddress() {
         return new Address(addressId, fullName, phone, street, postalCode, city);
+    }
+
+    public UUID getPaymentId() {
+        return paymentId;
     }
 
     public String getTrackingNumber() {

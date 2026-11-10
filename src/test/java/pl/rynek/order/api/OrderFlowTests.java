@@ -253,8 +253,22 @@ class OrderFlowTests {
         mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(UUID.randomUUID()))).andExpect(status().isNotFound());
         ship(buyer, id, "{\"trackingNumber\":\"6200000000001\"}").andExpect(status().isNotFound());
 
-        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Do wysłania"));
-        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(jsonPath("$.status").value("Do wysłania"));
+        mvc.perform(get("/internal/orders/" + id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AWAITING_PAYMENT"))
+                .andExpect(jsonPath("$.buyerId").value(buyer.toString()))
+                .andExpect(jsonPath("$.sellerId").value(seller.toString()))
+                .andExpect(jsonPath("$.total").value(2 * 38900 + 1299));
+        UUID paymentId = UUID.randomUUID();
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentId\":\"" + paymentId + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("Do wysłania"))
+                .andExpect(jsonPath("$.paymentId").value(paymentId.toString()));
+        // Ponowienie (także bez ciała) nic nie zmienia, płatność zostaje ta sama.
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid"))
+                .andExpect(jsonPath("$.status").value("Do wysłania"))
+                .andExpect(jsonPath("$.paymentId").value(paymentId.toString()));
         ship(seller, id, "{\"trackingNumber\":\" 6200000000001 \"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("W drodze"))
@@ -287,10 +301,22 @@ class OrderFlowTests {
         cancel(seller, bySeller).andExpect(status().isNotFound());
         mvc.perform(post("/internal/orders/" + byBuyer + "/mark-paid")).andExpect(status().isConflict());
 
-        mvc.perform(post("/internal/orders/" + bySeller + "/mark-paid")).andExpect(status().isOk());
         setStatus(seller, bySeller, "Anulowane").andExpect(status().isOk());
         assertThat(stock).containsEntry(drill, 3);
         assertThat(reservations).isEmpty();
+    }
+
+    @Test
+    void paidOrderCannotBeCancelledUntilRefundsExist() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 38900, 1);
+        String id = JsonPath.read(order(buyer, "k1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(status().isOk());
+        String message = "Opłaconego zamówienia nie można na razie anulować, bo nie obsługujemy jeszcze zwrotów pieniędzy.";
+        cancel(buyer, id).andExpect(status().isConflict()).andExpect(jsonPath("$.detail").value(message));
+        setStatus(seller, id, "Anulowane").andExpect(status().isConflict()).andExpect(jsonPath("$.detail").value(message));
+        assertThat(stock).containsEntry(drill, 0);
     }
 
     @Test

@@ -2,7 +2,7 @@
 
 Mikroserwis platformy **Rynek**: `order-service` — zamówienia
 
-Zakres, endpointy i zdarzenia są opisane w `README.md`. Zamówienia działają (PostgreSQL + Flyway, Spring Security Resource Server z JWKS identity); zapas rezerwuje w catalog. Zgłoszenie zwrotu zwraca 501. Nie dodawaj logiki bez wyraźnej prośby.
+Zakres, endpointy i zdarzenia są opisane w `README.md`. Zamówienia działają (PostgreSQL + Flyway, Spring Security Resource Server z JWKS identity); zapas rezerwuje w catalog, nieopłacone zamówienia wygasają po 30 min. Zgłoszenie zwrotu zwraca 501. Nie dodawaj logiki bez wyraźnej prośby.
 
 ## Wspólne konwencje API (§1 dokumentu architektury)
 

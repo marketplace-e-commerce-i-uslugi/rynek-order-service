@@ -1,6 +1,7 @@
 package pl.rynek.order.orders;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -11,9 +12,13 @@ import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,11 +50,15 @@ public class OrderService {
     private final CartClient cart;
     private final IdentityClient identity;
     private final ShippingClient shipping;
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
     private final TransactionTemplate transaction;
     private final Clock clock;
+    private final Duration paymentTimeout;
 
     public OrderService(OrderRepository orders, OrderRequestRepository requests, CatalogClient catalog, CartClient cart,
-                        IdentityClient identity, ShippingClient shipping, PlatformTransactionManager transactions, Clock clock) {
+                        IdentityClient identity, ShippingClient shipping, PlatformTransactionManager transactions, Clock clock,
+                        @Value("${rynek.orders.payment-timeout:30m}") Duration paymentTimeout) {
         this.orders = orders;
         this.requests = requests;
         this.catalog = catalog;
@@ -58,6 +67,7 @@ public class OrderService {
         this.shipping = shipping;
         this.transaction = new TransactionTemplate(transactions);
         this.clock = clock;
+        this.paymentTimeout = paymentTimeout;
     }
 
     /** Zakup z koszyka tworzy jedno zamówienie na sprzedawcę; „Kup teraz” jedno zamówienie z jedną pozycją. */
@@ -133,8 +143,30 @@ public class OrderService {
     }
 
     /** Wywołuje payment-service po udanej płatności. Ponowienie dla opłaconego zamówienia niczego nie zmienia. */
-    public Order markPaid(UUID orderId) {
-        return change(orderId, o -> true, o -> o.markPaid(clock.instant()));
+    public Order markPaid(UUID orderId, UUID paymentId) {
+        return change(orderId, o -> true, o -> o.markPaid(paymentId, clock.instant()));
+    }
+
+    @Transactional(readOnly = true)
+    public Order internal(UUID orderId) {
+        return find(orderId, o -> true);
+    }
+
+    /**
+     * Anuluje zamówienia nieopłacone dłużej niż {@code rynek.orders.payment-timeout} i zwalnia ich zapas, żeby porzucony
+     * zakup nie blokował sztuk. Zamówienie opłacone w międzyczasie zostaje (anulowanie sprawdza status pod blokadą wersji).
+     */
+    @Scheduled(fixedDelayString = "${rynek.orders.expiry-check:60s}", initialDelayString = "${rynek.orders.expiry-check:60s}")
+    public void expireUnpaid() {
+        Instant deadline = clock.instant().minus(paymentTimeout);
+        for (UUID id : orders.findAwaitingPaymentBefore(deadline)) {
+            try {
+                cancel(id, o -> o.getStatus() == OrderStatus.AWAITING_PAYMENT);
+                log.info("Zamówienie {} wygasło bez płatności", id);
+            } catch (ResponseStatusException e) {
+                log.debug("Zamówienie {} nie wygasło: {}", id, e.getReason());
+            }
+        }
     }
 
     private Order cancel(UUID orderId, Predicate<Order> allowed) {
