@@ -1,7 +1,7 @@
 package pl.rynek.order.api.dto;
 
-/**
- * Ciało żądania: Zmiana statusu. Pola do uzupełnienia razem z kontraktem w rynek-contracts.
- */
-public record ChangeStatusRequest() {
+import jakarta.validation.constraints.NotBlank;
+
+/** Status jako etykieta z API, np. „Zrealizowane” albo „Anulowane”. */
+public record ChangeStatusRequest(@NotBlank(message = "Podaj status.") String status) {
 }

@@ -2,7 +2,7 @@
 
 `order-service` — zamówienia
 
-> Status: **szkielet**. Wszystkie endpointy z tabeli istnieją w kontrolerach (`src/main/java/.../api/`) i zwracają `501 Not Implemented` (RFC 7807). Ciała żądań to puste rekordy w `api/dto/`.
+> Status: **zamówienia działają** (PostgreSQL + Flyway, JWT z JWKS identity): złożenie z koszyka i „Kup teraz” z rezerwacją zapasu, moje zamówienia, szczegóły, oś statusów, anulowanie, panel sprzedawcy (lista, wysyłka, zmiana statusu) i `mark-paid`. Zgłoszenie zwrotu zwraca `501 Not Implemented`. Zdarzeń Kafka jeszcze nie ma; zależne serwisy są wołane synchronicznie przez `/internal`.
 
 ## Uruchomienie
 
@@ -33,6 +33,16 @@ Ekrany: 8 Płatność, Profil → Moje zamówienia, 9 Panel → Zamówienia. Sta
 | POST | `/api/v1/seller/orders/{orderId}/status` | Zmiana statusu | seller |
 | POST | `/internal/orders/{orderId}/mark-paid` | Oznaczenie jako opłacone (po zdarzeniu z płatności) | int |
 
+### Zasady
+
+- `POST /orders {source, addressId, offerId?, quantity?, shippingMethodId?, pickupPointId?}` z nagłówkiem `Idempotency-Key` (wymagany, do 100 znaków). Ponowienie z tym samym kluczem zwraca te same zamówienia. Odpowiedź to lista: zakup z koszyka od kilku sprzedawców daje jedno zamówienie na sprzedawcę.
+- `CART` zamawia dostępne pozycje koszyka z dostawą wybraną w koszyku (bez wyboru: paczkomat). Niedostępne zostają w koszyku, zamówione są z niego usuwane. `BUY_NOW` bierze dostawę z żądania.
+- Paczkomat wymaga `pickupPointId` (422). Adres, ceny, tytuły i dostawa są kopią z chwili zakupu.
+- Zapas: każda pozycja rezerwuje sztuki w catalog (id pozycji = id rezerwacji). Gdy któraś rezerwacja się nie uda, wcześniejsze są zwalniane i zamówienie nie powstaje (409 z tytułem oferty). Anulowanie zwalnia rezerwacje. Nieopłacone zamówienia jeszcze nie wygasają same (czeka na payment-service).
+- Statusy: „Oczekuje na płatność” → (`mark-paid`) „Do wysłania” → (`/ship` z numerem przesyłki) „W drodze” → (`/status` „Zrealizowane”) „Zrealizowane”. Anulować może kupujący (`/cancel`) i sprzedawca (`/status` „Anulowane”) przed wysyłką. Zwrot pieniędzy za anulowane opłacone zamówienie czeka na payment-service.
+- Zamówienie widzą tylko kupujący i sprzedawca (właściciel kanału); dla innych jest 404. Równoległe zmiany statusu rozstrzyga `@Version` (409).
+- `Order` ma więcej pól niż kształt z frontendu: `itemsTotal`, `shippingTotal`, `shipping {methodId, name, pickupPointId, pickupPoint}`, `trackingNumber`. `number` ma postać `#1001`.
+
 ## Zdarzenia Kafka
 
 Wiersze z §17, w których występuje `order` (publikuje lub słucha).
@@ -45,8 +55,8 @@ Wiersze z §17, w których występuje `order` (publikuje lub słucha).
 
 ## Dane i zależności
 
-- **Magazyn danych:** PostgreSQL
-- **Zależności:** cart-service, catalog-service (rezerwacja zapasu), payment-service
+- **Magazyn danych:** PostgreSQL (baza `orders`)
+- **Zależności:** cart-service (`/internal/carts`), catalog-service (`price-and-stock`, rezerwacja i zwolnienie zapasu), identity-service (adres), shipping-service (cena dostawy, punkt odbioru), channel-service (nagłówek sprzedawcy); payment-service woła `mark-paid`
 - **Kontrakty:** `rynek-contracts/openapi/` i `rynek-contracts/events/`
 - **Lokalne uruchomienie:** `rynek-infra/local/`
 

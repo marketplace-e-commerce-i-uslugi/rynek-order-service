@@ -4,6 +4,32 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  datasource:
+    # Lokalnie: rynek-infra/local (docker compose). Inne środowiska ustawiają zmienne.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/orders}
+    username: ${DB_USER:orders}
+    password: ${DB_PASSWORD:orders}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Schemat zakłada Flyway (db/migration); Hibernate tylko sprawdza zgodność encji.
+      ddl-auto: validate
+
+rynek:
+  catalog:
+    url: ${CATALOG_SERVICE_URL:http://localhost:8083}
+  channel:
+    url: ${CHANNEL_SERVICE_URL:http://localhost:8082}
+  shipping:
+    url: ${SHIPPING_SERVICE_URL:http://localhost:8094}
+  cart:
+    url: ${CART_SERVICE_URL:http://localhost:8090}
+  identity:
+    url: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+  jwt:
+    # Klucze publiczne pobierane leniwie przy pierwszym tokenie, więc serwis startuje bez działającego identity.
+    jwk-set-uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}/internal/auth/jwks
+    issuer: ${JWT_ISSUER:rynek-identity}
 
 server:
   port: ${PORT:8091}

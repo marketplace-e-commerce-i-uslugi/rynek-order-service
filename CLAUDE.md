@@ -2,7 +2,7 @@
 
 Mikroserwis platformy **Rynek**: `order-service` — zamówienia
 
-Zakres, endpointy i zdarzenia są opisane w `README.md`. Na razie to szkielet: endpointy zwracają 501, DTO są puste. Nie dodawaj logiki bez wyraźnej prośby.
+Zakres, endpointy i zdarzenia są opisane w `README.md`. Zamówienia działają (PostgreSQL + Flyway, Spring Security Resource Server z JWKS identity); zapas rezerwuje w catalog. Zgłoszenie zwrotu zwraca 501. Nie dodawaj logiki bez wyraźnej prośby.
 
 ## Wspólne konwencje API (§1 dokumentu architektury)
 
@@ -24,7 +24,7 @@ Legenda kolumny **Dostęp**: `pub` = bez logowania, `user` = zalogowany, `seller
 ## Stack
 
 - Java 25, Spring Boot 4.1 (Maven, `./mvnw`)
-- Dane: PostgreSQL
+- Dane: PostgreSQL (Flyway); testy na Testcontainers
 - Zdarzenia: Kafka, nazwy `domena.zdarzenie`
 
 ## Powiązane repozytoria
@@ -35,6 +35,6 @@ Legenda kolumny **Dostęp**: `pub` = bez logowania, `user` = zalogowany, `seller
 
 ## Struktura kodu
 
-- `pl.rynek.order.api`: kontrolery REST (pełne ścieżki w adnotacjach), `api.dto`: rekordy żądań, `common.NotImplemented`: odpowiedź 501
+- `pl.rynek.order.api`: kontrolery REST (pełne ścieżki w adnotacjach), `api.dto`: rekordy żądań i odpowiedzi, `common.NotImplemented`: odpowiedź 501; `orders`: zamówienie, statusy, składanie z rezerwacją zapasu, idempotencja; `clients`: klienci cart, catalog, identity, shipping, channel; `config`: security, błędy RFC 7807 po polsku
 - Konfiguracja: `src/main/resources/application.yml`
 - Port lokalny: 8091

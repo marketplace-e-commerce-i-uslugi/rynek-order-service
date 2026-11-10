@@ -1,5 +1,10 @@
 package pl.rynek.order.api;
 
+import java.util.UUID;
+
+import jakarta.validation.Valid;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -7,34 +12,54 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import pl.rynek.order.api.dto.ChangeStatusRequest;
+import pl.rynek.order.api.dto.CursorPage;
 import pl.rynek.order.api.dto.MarkShippedRequest;
+import pl.rynek.order.api.dto.OrderResponse;
+import pl.rynek.order.orders.OrderService;
+import pl.rynek.order.orders.OrderStatus;
 
-import static pl.rynek.order.common.NotImplemented.notImplemented;
-
+/** Sprzedawca to właściciel kanału, z którego pochodzą oferty zamówienia ({@code seller_id} = sub z JWT). */
 @RestController
 public class SellerOrdersController {
+
+    private final OrderService orders;
+    private final OrderViews views;
+
+    public SellerOrdersController(OrderService orders, OrderViews views) {
+        this.orders = orders;
+        this.views = views;
+    }
 
     /**
      * Zamówienia sprzedawcy. Dostęp: seller.
      */
     @GetMapping("/api/v1/seller/orders")
-    public void listOrders(@RequestParam(required = false) String status, @RequestParam(required = false) String cursor) {
-        throw notImplemented();
+    public CursorPage<OrderResponse> listOrders(@AuthenticationPrincipal Jwt token, @RequestParam(required = false) String status,
+                                                @RequestParam(required = false) String cursor, @RequestParam(required = false) Integer limit) {
+        OrderStatus filter = OrderViews.status(status);
+        UUID seller = userId(token);
+        return views.page(cursor, limit, (offset, n) -> orders.ofSeller(seller, filter, offset, n));
     }
 
     /**
      * Oznaczenie jako wysłane (numer przesyłki). Dostęp: seller.
      */
     @PostMapping("/api/v1/seller/orders/{orderId}/ship")
-    public void markShipped(@PathVariable String orderId, @RequestBody MarkShippedRequest request) {
-        throw notImplemented();
+    public OrderResponse markShipped(@AuthenticationPrincipal Jwt token, @PathVariable UUID orderId,
+                                     @Valid @RequestBody MarkShippedRequest request) {
+        return views.one(orders.ship(userId(token), orderId, request.trackingNumber()));
     }
 
     /**
-     * Zmiana statusu. Dostęp: seller.
+     * Zmiana statusu: „Zrealizowane” (z „W drodze”) albo „Anulowane” (przed wysyłką). Dostęp: seller.
      */
     @PostMapping("/api/v1/seller/orders/{orderId}/status")
-    public void changeStatus(@PathVariable String orderId, @RequestBody ChangeStatusRequest request) {
-        throw notImplemented();
+    public OrderResponse changeStatus(@AuthenticationPrincipal Jwt token, @PathVariable UUID orderId,
+                                      @Valid @RequestBody ChangeStatusRequest request) {
+        return views.one(orders.changeBySeller(userId(token), orderId, OrderViews.status(request.status())));
+    }
+
+    private static UUID userId(Jwt token) {
+        return UUID.fromString(token.getSubject());
     }
 }
