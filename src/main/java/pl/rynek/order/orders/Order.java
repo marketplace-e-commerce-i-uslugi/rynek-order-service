@@ -89,6 +89,10 @@ public class Order {
     @Column(name = "payment_id")
     private UUID paymentId;
 
+    /** {@code false}: anulowanie czeka na przyjęcie przez payment-service (zwrot, zamknięcie płatności w toku). */
+    @Column(name = "payment_notified")
+    private boolean paymentNotified = true;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -151,11 +155,15 @@ public class Order {
         if (!status.cancellable()) {
             throw conflict(switch (status) {
                 case CANCELLED -> "Zamówienie jest już anulowane.";
-                case TO_SHIP -> "Opłaconego zamówienia nie można na razie anulować, bo nie obsługujemy jeszcze zwrotów pieniędzy.";
-                default -> "Zamówienia w statusie „" + status.label() + "” nie można anulować.";
+                default -> "Zamówienie jest już wysłane, więc nie można go anulować. Możesz zgłosić zwrot po odebraniu paczki.";
             });
         }
         moveTo(OrderStatus.CANCELLED, now);
+        this.paymentNotified = false;
+    }
+
+    void paymentNotified() {
+        this.paymentNotified = true;
     }
 
     void ship(String trackingNumber, Instant now) {
@@ -238,6 +246,10 @@ public class Order {
 
     public UUID getPaymentId() {
         return paymentId;
+    }
+
+    public boolean isPaymentNotified() {
+        return paymentNotified;
     }
 
     public String getTrackingNumber() {

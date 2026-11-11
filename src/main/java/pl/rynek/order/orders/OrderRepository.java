@@ -24,4 +24,7 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     @Query("select o.id from Order o where o.status = pl.rynek.order.orders.OrderStatus.AWAITING_PAYMENT and o.createdAt < :deadline")
     List<UUID> findAwaitingPaymentBefore(java.time.Instant deadline);
+
+    @Query("select o.id from Order o where o.paymentNotified = false order by o.updatedAt")
+    List<UUID> findPaymentUnnotified();
 }

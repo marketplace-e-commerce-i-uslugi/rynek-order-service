@@ -30,6 +30,7 @@ import pl.rynek.order.clients.CartClient.CartSnapshot;
 import pl.rynek.order.clients.CatalogClient;
 import pl.rynek.order.clients.CatalogClient.OfferInfo;
 import pl.rynek.order.clients.IdentityClient;
+import pl.rynek.order.clients.PaymentClient;
 import pl.rynek.order.clients.ShippingClient;
 import pl.rynek.order.clients.ShippingClient.Method;
 import pl.rynek.order.orders.Order.Line;
@@ -37,7 +38,8 @@ import pl.rynek.order.orders.Order.Line;
 /**
  * Składanie zamówień i zmiany statusu. Złożenie rezerwuje zapas w catalog przed zapisem; jeśli cokolwiek się nie uda
  * (brak sztuk, błąd zapisu, ten sam Idempotency-Key równolegle), zarezerwowane sztuki wracają do zapasu.
- * Rezerwacja trwa do anulowania zamówienia; wygasania nieopłaconych zamówień jeszcze nie ma (czeka na payment-service).
+ * Rezerwacja trwa do anulowania albo wygaśnięcia zamówienia. Anulowanie trafia do payment-service (zwrot pieniędzy
+ * za opłacone zamówienie); gdy payment-service nie odpowiada, zgłoszenie jest ponawiane co minutę.
  */
 @Service
 public class OrderService {
@@ -50,6 +52,7 @@ public class OrderService {
     private final CartClient cart;
     private final IdentityClient identity;
     private final ShippingClient shipping;
+    private final PaymentClient payment;
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     private final TransactionTemplate transaction;
@@ -57,7 +60,8 @@ public class OrderService {
     private final Duration paymentTimeout;
 
     public OrderService(OrderRepository orders, OrderRequestRepository requests, CatalogClient catalog, CartClient cart,
-                        IdentityClient identity, ShippingClient shipping, PlatformTransactionManager transactions, Clock clock,
+                        IdentityClient identity, ShippingClient shipping, PaymentClient payment,
+                        PlatformTransactionManager transactions, Clock clock,
                         @Value("${rynek.orders.payment-timeout:30m}") Duration paymentTimeout) {
         this.orders = orders;
         this.requests = requests;
@@ -65,6 +69,7 @@ public class OrderService {
         this.cart = cart;
         this.identity = identity;
         this.shipping = shipping;
+        this.payment = payment;
         this.transaction = new TransactionTemplate(transactions);
         this.clock = clock;
         this.paymentTimeout = paymentTimeout;
@@ -152,6 +157,12 @@ public class OrderService {
         return find(orderId, o -> true);
     }
 
+    /** Zamówienia do salda sprzedawcy w payment-service; nieistniejące są pomijane. */
+    @Transactional(readOnly = true)
+    public List<Order> internal(List<UUID> orderIds) {
+        return orders.findByIdIn(orderIds);
+    }
+
     /**
      * Anuluje zamówienia nieopłacone dłużej niż {@code rynek.orders.payment-timeout} i zwalnia ich zapas, żeby porzucony
      * zakup nie blokował sztuk. Zamówienie opłacone w międzyczasie zostaje (anulowanie sprawdza status pod blokadą wersji).
@@ -169,10 +180,37 @@ public class OrderService {
         }
     }
 
+    /** Ponawia zgłoszenia anulowania, których payment-service jeszcze nie przyjął. */
+    @Scheduled(fixedDelayString = "${rynek.orders.payment-retry:60s}", initialDelayString = "${rynek.orders.payment-retry:60s}")
+    public void notifyPaymentPending() {
+        orders.findPaymentUnnotified().forEach(this::notifyPayment);
+    }
+
     private Order cancel(UUID orderId, Predicate<Order> allowed) {
         Order cancelled = change(orderId, allowed, o -> o.cancel(clock.instant()));
         release(cancelled.getLines());
-        return cancelled;
+        return notifyPayment(cancelled.getId());
+    }
+
+    /**
+     * Zwrot pieniędzy za opłacone zamówienie i zamknięcie płatności w toku. Odrzucenie (4xx) nie jest ponawiane: oznacza
+     * błąd danych, który wymaga ręcznego sprawdzenia, a nie chwilową awarię.
+     */
+    private Order notifyPayment(UUID orderId) {
+        PaymentClient.Result result = payment.orderCancelled(orderId);
+        if (result == PaymentClient.Result.UNAVAILABLE) {
+            log.warn("Zamówienie {}: payment-service nie odpowiada, ponowimy zgłoszenie anulowania", orderId);
+            return find(orderId, o -> true);
+        }
+        if (result == PaymentClient.Result.REJECTED) {
+            log.error("Zamówienie {}: payment-service odrzucił zgłoszenie anulowania, sprawdź zwrot ręcznie", orderId);
+        }
+        try {
+            return change(orderId, o -> true, Order::paymentNotified);
+        } catch (ResponseStatusException e) {
+            // Równoległa zmiana: flaga zostaje, zgłoszenie (idempotentne w payment-service) pójdzie jeszcze raz.
+            return find(orderId, o -> true);
+        }
     }
 
     private Order change(UUID orderId, Predicate<Order> allowed, java.util.function.Consumer<Order> action) {

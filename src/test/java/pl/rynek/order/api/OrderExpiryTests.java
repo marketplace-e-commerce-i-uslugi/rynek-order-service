@@ -35,6 +35,7 @@ import pl.rynek.order.clients.CatalogClient.Money;
 import pl.rynek.order.clients.CatalogClient.OfferInfo;
 import pl.rynek.order.clients.ChannelClient;
 import pl.rynek.order.clients.IdentityClient;
+import pl.rynek.order.clients.PaymentClient;
 import pl.rynek.order.clients.IdentityClient.Address;
 import pl.rynek.order.clients.ShippingClient;
 import pl.rynek.order.clients.ShippingClient.Method;
@@ -72,6 +73,9 @@ class OrderExpiryTests {
 
     @MockitoBean
     ChannelClient channels;
+
+    @MockitoBean
+    PaymentClient payment;
 
     final UUID buyer = UUID.randomUUID();
     final UUID seller = UUID.randomUUID();

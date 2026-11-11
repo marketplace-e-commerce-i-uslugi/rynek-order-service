@@ -32,6 +32,7 @@ Ekrany: 8 Płatność, Profil → Moje zamówienia, 9 Panel → Zamówienia. Sta
 | POST | `/api/v1/seller/orders/{orderId}/ship` | Oznaczenie jako wysłane (numer przesyłki) | seller |
 | POST | `/api/v1/seller/orders/{orderId}/status` | Zmiana statusu | seller |
 | GET | `/internal/orders/{orderId}` | Kwota, status i kupujący dla payment-service | int |
+| GET | `/internal/orders?ids=` | Wiele zamówień naraz (najwyżej 100), np. statusy do salda sprzedawcy | int |
 | POST | `/internal/orders/{orderId}/mark-paid` | Oznaczenie jako opłacone (po zdarzeniu z płatności) | int |
 
 ### Zasady
@@ -42,7 +43,8 @@ Ekrany: 8 Płatność, Profil → Moje zamówienia, 9 Panel → Zamówienia. Sta
 - Zapas: każda pozycja rezerwuje sztuki w catalog (id pozycji = id rezerwacji). Gdy któraś rezerwacja się nie uda, wcześniejsze są zwalniane i zamówienie nie powstaje (409 z tytułem oferty). Anulowanie zwalnia rezerwacje.
 - Wygasanie: zamówienie nieopłacone dłużej niż `rynek.orders.payment-timeout` (domyślnie 30 min) jest anulowane, a jego zapas zwolniony. Sprawdzenie co `rynek.orders.expiry-check` (60 s).
 - `GET /internal/orders/{id}` (dla payment-service): `{id, number, buyerId, sellerId, status, total}`, gdzie `status` to nazwa stałej (np. `AWAITING_PAYMENT`). `mark-paid` przyjmuje opcjonalne `{paymentId}`, które trafia do `Order.paymentId` (zwrot środków).
-- Statusy: „Oczekuje na płatność” → (`mark-paid`) „Do wysłania” → (`/ship` z numerem przesyłki) „W drodze” → (`/status` „Zrealizowane”) „Zrealizowane”. Anulować może kupujący (`/cancel`) i sprzedawca (`/status` „Anulowane”), na razie tylko zamówienie nieopłacone. Opłaconego nie można anulować (409), dopóki payment-service nie obsługuje zwrotów.
+- Statusy: „Oczekuje na płatność” → (`mark-paid`) „Do wysłania” → (`/ship` z numerem przesyłki) „W drodze” → (`/status` „Zrealizowane”) „Zrealizowane”. Anulować może kupujący (`/cancel`) i sprzedawca (`/status` „Anulowane”) zamówienie przed wysyłką. Wysłanego nie można anulować (409).
+- Każde anulowanie (także wygaśnięcie) trafia do payment-service: `POST /internal/orders/{id}/cancelled` zamiast zdarzenia `order.cancelled`. Payment zwraca pieniądze za opłacone zamówienie i zamyka płatności w toku. Gdy payment-service nie odpowiada, anulowanie i tak się udaje, a zgłoszenie jest ponawiane co `rynek.orders.payment-retry` (60 s, flaga `payment_notified`). Odrzucenie 4xx nie jest ponawiane i trafia do logu jako błąd do ręcznego sprawdzenia.
 - Zamówienie widzą tylko kupujący i sprzedawca (właściciel kanału); dla innych jest 404. Równoległe zmiany statusu rozstrzyga `@Version` (409).
 - `Order` ma więcej pól niż kształt z frontendu: `itemsTotal`, `shippingTotal`, `shipping {methodId, name, pickupPointId, pickupPoint}`, `trackingNumber`. `number` ma postać `#1001`.
 
@@ -59,7 +61,7 @@ Wiersze z §17, w których występuje `order` (publikuje lub słucha).
 ## Dane i zależności
 
 - **Magazyn danych:** PostgreSQL (baza `orders`)
-- **Zależności:** cart-service (`/internal/carts`), catalog-service (`price-and-stock`, rezerwacja i zwolnienie zapasu), identity-service (adres), shipping-service (cena dostawy, punkt odbioru), channel-service (nagłówek sprzedawcy); payment-service woła `mark-paid`
+- **Zależności:** cart-service (`/internal/carts`), catalog-service (`price-and-stock`, rezerwacja i zwolnienie zapasu), identity-service (adres), shipping-service (cena dostawy, punkt odbioru), channel-service (nagłówek sprzedawcy), payment-service (`POST /internal/orders/{id}/cancelled`); payment-service woła `mark-paid` i `GET /internal/orders`
 - **Kontrakty:** `rynek-contracts/openapi/` i `rynek-contracts/events/`
 - **Lokalne uruchomienie:** `rynek-infra/local/`
 

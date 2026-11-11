@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -52,10 +53,13 @@ import pl.rynek.order.clients.CatalogClient.OfferInfo;
 import pl.rynek.order.clients.ChannelClient;
 import pl.rynek.order.clients.ChannelClient.ChannelRef;
 import pl.rynek.order.clients.IdentityClient;
+import pl.rynek.order.clients.PaymentClient;
 import pl.rynek.order.clients.IdentityClient.Address;
 import pl.rynek.order.clients.ShippingClient;
 import pl.rynek.order.clients.ShippingClient.Method;
 import pl.rynek.order.clients.ShippingClient.PickupPoint;
+import pl.rynek.order.orders.OrderRepository;
+import pl.rynek.order.orders.OrderService;
 
 /**
  * Zamówienia na prawdziwym PostgreSQL. Atrapa catalog trzyma zapas w mapie i rezerwuje go jak catalog-service
@@ -68,6 +72,12 @@ class OrderFlowTests {
 
     @Autowired
     MockMvc mvc;
+
+    @Autowired
+    OrderRepository repository;
+
+    @Autowired
+    OrderService service;
 
     @MockitoBean
     JwtDecoder jwtDecoder;
@@ -86,6 +96,9 @@ class OrderFlowTests {
 
     @MockitoBean
     ChannelClient channels;
+
+    @MockitoBean
+    PaymentClient payment;
 
     final Map<UUID, OfferInfo> offers = new ConcurrentHashMap<>();
     final Map<UUID, Integer> stock = new ConcurrentHashMap<>();
@@ -307,16 +320,42 @@ class OrderFlowTests {
     }
 
     @Test
-    void paidOrderCannotBeCancelledUntilRefundsExist() throws Exception {
+    void paidOrderCanBeCancelledBeforeShippingAndPaymentServiceIsNotified() throws Exception {
         UUID buyer = UUID.randomUUID();
         UUID seller = UUID.randomUUID();
-        UUID drill = product(seller, 38900, 1);
-        String id = JsonPath.read(order(buyer, "k1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
-        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(status().isOk());
-        String message = "Opłaconego zamówienia nie można na razie anulować, bo nie obsługujemy jeszcze zwrotów pieniędzy.";
-        cancel(buyer, id).andExpect(status().isConflict()).andExpect(jsonPath("$.detail").value(message));
-        setStatus(seller, id, "Anulowane").andExpect(status().isConflict()).andExpect(jsonPath("$.detail").value(message));
-        assertThat(stock).containsEntry(drill, 0);
+        UUID drill = product(seller, 38900, 2);
+        String byBuyer = JsonPath.read(order(buyer, "k1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        String bySeller = JsonPath.read(order(buyer, "k2", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + byBuyer + "/mark-paid")).andExpect(status().isOk());
+        mvc.perform(post("/internal/orders/" + bySeller + "/mark-paid")).andExpect(status().isOk());
+
+        given(payment.orderCancelled(any())).willReturn(PaymentClient.Result.DONE);
+        cancel(buyer, byBuyer).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Anulowane"));
+        verify(payment).orderCancelled(UUID.fromString(byBuyer));
+        assertThat(repository.findById(UUID.fromString(byBuyer)).orElseThrow().isPaymentNotified()).isTrue();
+
+        // payment-service nie odpowiada: anulowanie się udaje, a zgłoszenie czeka na ponowienie.
+        given(payment.orderCancelled(any())).willReturn(PaymentClient.Result.UNAVAILABLE);
+        setStatus(seller, bySeller, "Anulowane").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Anulowane"));
+        assertThat(repository.findById(UUID.fromString(bySeller)).orElseThrow().isPaymentNotified()).isFalse();
+        assertThat(stock).containsEntry(drill, 2);
+
+        given(payment.orderCancelled(any())).willReturn(PaymentClient.Result.DONE);
+        service.notifyPaymentPending();
+        assertThat(repository.findById(UUID.fromString(bySeller)).orElseThrow().isPaymentNotified()).isTrue();
+        verify(payment, times(2)).orderCancelled(UUID.fromString(bySeller));
+    }
+
+    @Test
+    void internalBatchReturnsKnownOrders() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID drill = product(UUID.randomUUID(), 1000, 5);
+        String a = JsonPath.read(order(buyer, "k1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(get("/internal/orders").param("ids", a + "," + UUID.randomUUID()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id").value(a))
+                .andExpect(jsonPath("$[0].status").value("AWAITING_PAYMENT"));
     }
 
     @Test

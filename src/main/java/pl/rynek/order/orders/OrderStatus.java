@@ -33,11 +33,8 @@ public enum OrderStatus {
         return Arrays.stream(values()).filter(s -> s.label.equalsIgnoreCase(value.trim()) || s.name().equalsIgnoreCase(value.trim())).findFirst();
     }
 
-    /**
-     * Anulować można tylko nieopłacone zamówienie. Opłacone („Do wysłania”) wymaga zwrotu pieniędzy, a zwrotów
-     * w payment-service jeszcze nie ma; po ich dodaniu wróci anulowanie przed wysyłką ze zwrotem.
-     */
+    /** Anulować można zamówienie przed wysyłką. Za opłacone („Do wysłania”) payment-service zwraca pieniądze. */
     boolean cancellable() {
-        return this == AWAITING_PAYMENT;
+        return this == AWAITING_PAYMENT || this == TO_SHIP;
     }
 }

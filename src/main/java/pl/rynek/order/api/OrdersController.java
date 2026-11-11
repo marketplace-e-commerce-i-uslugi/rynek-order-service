@@ -76,8 +76,8 @@ public class OrdersController {
     }
 
     /**
-     * Anulowanie (przed wysyłką): sztuki wracają do zapasu. Dostęp: user. Zwrot pieniędzy za opłacone zamówienie
-     * czeka na payment-service. Ciało ({@code reason}) jest opcjonalne i na razie nie jest zapisywane.
+     * Anulowanie (przed wysyłką): sztuki wracają do zapasu, a za opłacone zamówienie payment-service zwraca pieniądze.
+     * Dostęp: user. Ciało ({@code reason}) jest opcjonalne i na razie nie jest zapisywane.
      */
     @PostMapping("/api/v1/orders/{orderId}/cancel")
     public OrderResponse cancelOrder(@AuthenticationPrincipal Jwt token, @PathVariable UUID orderId) {
