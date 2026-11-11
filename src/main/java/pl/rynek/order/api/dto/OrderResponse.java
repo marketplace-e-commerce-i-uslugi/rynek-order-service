@@ -11,11 +11,13 @@ import pl.rynek.order.orders.OrderStatus;
 /**
  * Kształt {@code Order} z rynek-frontend (commerce.ts) plus {@code itemsTotal}, {@code shippingTotal},
  * {@code shipping} i {@code trackingNumber}. {@code paymentId}: płatność, która opłaciła zamówienie. {@code shipmentId}: przesyłka
- * z shipping-service (etykieta, śledzenie); pusty, gdy sprzedawca wysłał paczkę bez etykiety z Rynku.
+ * z shipping-service (etykieta, śledzenie); pusty, gdy sprzedawca wysłał paczkę bez etykiety z Rynku. {@code returnRequest}:
+ * zgłoszenie zwrotu ({@code status}: „Zgłoszony”, „Odrzucony”, „Pieniądze zwrócone”) albo {@code null}.
  */
 public record OrderResponse(UUID id, String number, OrderStatus status, Instant createdAt, ChannelRef channel, String buyerName,
                             List<Line> lines, MoneyDto itemsTotal, MoneyDto shippingTotal, MoneyDto total, Address shippingAddress,
-                            Shipping shipping, String trackingNumber, UUID shipmentId, UUID paymentId, boolean reviewed) {
+                            Shipping shipping, String trackingNumber, UUID shipmentId, UUID paymentId, boolean reviewed,
+                            Order.ReturnRequest returnRequest) {
 
     public static OrderResponse of(Order o, ChannelRef channel) {
         Order.Address a = o.getAddress();
@@ -24,7 +26,7 @@ public record OrderResponse(UUID id, String number, OrderStatus status, Instant 
                 MoneyDto.pln(o.getItemsTotal()), MoneyDto.pln(o.getShippingTotal()), MoneyDto.pln(o.getItemsTotal() + o.getShippingTotal()),
                 new Address(a.id(), a.fullName(), a.phone(), a.street(), a.postalCode(), a.city()),
                 new Shipping(o.getShippingMethodId(), o.getShippingMethodName(), o.getPickupPointId(), o.getPickupPointLabel()),
-                o.getTrackingNumber(), o.getShipmentId(), o.getPaymentId(), false);
+                o.getTrackingNumber(), o.getShipmentId(), o.getPaymentId(), false, o.getReturnRequest());
     }
 
     public record Line(UUID offerId, String title, int quantity, MoneyDto unitPrice) {

@@ -1,5 +1,6 @@
 package pl.rynek.order.orders;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -91,6 +92,23 @@ public class Order {
     private UUID shipmentId;
 
     private String carrier;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "return_status")
+    private ReturnStatus returnStatus;
+
+    @Column(name = "return_reason")
+    private String returnReason;
+
+    @Column(name = "return_requested_at")
+    private Instant returnRequestedAt;
+
+    /** Uzasadnienie odrzucenia od sprzedawcy. */
+    @Column(name = "return_decision")
+    private String returnDecision;
+
+    @Column(name = "return_decided_at")
+    private Instant returnDecidedAt;
 
     @Column(name = "payment_id")
     private UUID paymentId;
@@ -210,6 +228,54 @@ public class Order {
         }
     }
 
+    /**
+     * Zgłoszenie zwrotu przez kupującego: tylko zamówienie zrealizowane, w ciągu {@code window} od realizacji
+     * (doręczenia), jedno zgłoszenie na zamówienie.
+     */
+    void requestReturn(String reason, Duration window, Instant now) {
+        if (status != OrderStatus.COMPLETED) {
+            throw conflict("Zwrot zgłosisz po odebraniu zamówienia.");
+        }
+        if (returnStatus != null) {
+            throw conflict(switch (returnStatus) {
+                case REQUESTED -> "Zwrot tego zamówienia jest już zgłoszony. Czekamy na odpowiedź sprzedawcy.";
+                case REJECTED -> "Sprzedawca odrzucił zgłoszenie zwrotu. Napisz do niego, jeśli się nie zgadzasz.";
+                case REFUNDED -> "Pieniądze za to zamówienie zostały już zwrócone.";
+            });
+        }
+        Instant completedAt = completedAt();
+        if (completedAt != null && completedAt.plus(window).isBefore(now)) {
+            throw conflict("Minęło " + window.toDays() + " dni od doręczenia, więc zwrotu nie można już zgłosić.");
+        }
+        this.returnStatus = ReturnStatus.REQUESTED;
+        this.returnReason = reason;
+        this.returnRequestedAt = now;
+        this.updatedAt = now;
+    }
+
+    void rejectReturn(String reason, Instant now) {
+        if (returnStatus != ReturnStatus.REQUESTED) {
+            throw conflict(returnStatus == null ? "Kupujący nie zgłosił zwrotu tego zamówienia." : "Zgłoszenie zwrotu jest już rozpatrzone.");
+        }
+        this.returnStatus = ReturnStatus.REJECTED;
+        this.returnDecision = reason;
+        this.returnDecidedAt = now;
+        this.updatedAt = now;
+    }
+
+    /** Sprzedawca zwrócił pieniądze: zgłoszony zwrot jest przyjęty. Bez zgłoszenia (zwrot z własnej inicjatywy) nic się nie zmienia. */
+    void returnRefunded(Instant now) {
+        if (returnStatus == ReturnStatus.REQUESTED) {
+            this.returnStatus = ReturnStatus.REFUNDED;
+            this.returnDecidedAt = now;
+            this.updatedAt = now;
+        }
+    }
+
+    private Instant completedAt() {
+        return history.stream().filter(h -> h.status() == OrderStatus.COMPLETED).map(StatusChange::at).reduce((a, b) -> b).orElse(null);
+    }
+
     void complete(Instant now) {
         if (status != OrderStatus.SHIPPED) {
             throw conflict("Zrealizować można tylko zamówienie w drodze.");
@@ -295,6 +361,11 @@ public class Order {
         return carrier;
     }
 
+    /** Zgłoszenie zwrotu albo {@code null}, gdy kupujący go nie zgłosił. */
+    public ReturnRequest getReturnRequest() {
+        return returnStatus == null ? null : new ReturnRequest(returnStatus, returnReason, returnRequestedAt, returnDecision, returnDecidedAt);
+    }
+
     public String getTrackingNumber() {
         return trackingNumber;
     }
@@ -322,6 +393,10 @@ public class Order {
     }
 
     public record Address(UUID id, String fullName, String phone, String street, String postalCode, String city) {
+    }
+
+    /** {@code decision}: uzasadnienie odrzucenia; {@code decidedAt}: odrzucenie albo zwrot pieniędzy. */
+    public record ReturnRequest(ReturnStatus status, String reason, Instant requestedAt, String decision, Instant decidedAt) {
     }
 
     record Shipping(String methodId, String methodName, long price, String pickupPointId, String pickupPointLabel) {

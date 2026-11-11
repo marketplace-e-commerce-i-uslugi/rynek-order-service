@@ -396,6 +396,68 @@ class OrderFlowTests {
         carrierStatus(cancelled, "PICKED_UP").andExpect(status().isConflict());
     }
 
+    @Test
+    void buyerRequestsReturnAndSellerRejectsOrRefunds() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 38900, 3);
+        String id = JsonPath.read(order(buyer, "k1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(status().isOk());
+        // Przed doręczeniem: bez zwrotu.
+        requestReturn(buyer, id, "Nie pasuje").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value("Zwrot zgłosisz po odebraniu zamówienia."));
+        carrierStatus(id, "DELIVERED").andExpect(jsonPath("$.status").value("Zrealizowane"));
+
+        requestReturn(buyer, id, " ").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("Napisz, dlaczego zwracasz zamówienie."));
+        requestReturn(seller, id, "Nie pasuje").andExpect(status().isNotFound());
+        requestReturn(buyer, id, " Wiertarka jest za ciężka ")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.returnRequest.status").value("Zgłoszony"))
+                .andExpect(jsonPath("$.returnRequest.reason").value("Wiertarka jest za ciężka"))
+                .andExpect(jsonPath("$.returnRequest.requestedAt").exists());
+        requestReturn(buyer, id, "Jeszcze raz").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value("Zwrot tego zamówienia jest już zgłoszony. Czekamy na odpowiedź sprzedawcy."));
+
+        rejectReturn(buyer, id, "Nie").andExpect(status().isNotFound());
+        rejectReturn(seller, id, "").andExpect(status().isBadRequest());
+        rejectReturn(seller, id, "Produkt nosi ślady użytkowania.")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.returnRequest.status").value("Odrzucony"))
+                .andExpect(jsonPath("$.returnRequest.decision").value("Produkt nosi ślady użytkowania."));
+        rejectReturn(seller, id, "Jeszcze raz").andExpect(status().isConflict());
+        mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(buyer)))
+                .andExpect(jsonPath("$.returnRequest.status").value("Odrzucony"));
+        // Zwrot pieniędzy po odrzuceniu (np. po rozmowie) nie zmienia już zgłoszenia.
+        mvc.perform(post("/internal/orders/" + id + "/refunded")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(buyer)))
+                .andExpect(jsonPath("$.returnRequest.status").value("Odrzucony"));
+
+        // Drugie zamówienie: sprzedawca przyjmuje zwrot, zwracając pieniądze.
+        String other = JsonPath.read(order(buyer, "k2", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + other + "/mark-paid")).andExpect(status().isOk());
+        carrierStatus(other, "DELIVERED").andExpect(status().isOk());
+        requestReturn(buyer, other, "Zmieniłam zdanie").andExpect(status().isOk());
+        mvc.perform(post("/internal/orders/" + other + "/refunded")).andExpect(status().isNoContent());
+        mvc.perform(post("/internal/orders/" + other + "/refunded")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/orders/" + other).header(HttpHeaders.AUTHORIZATION, bearer(seller)))
+                .andExpect(jsonPath("$.returnRequest.status").value("Pieniądze zwrócone"))
+                .andExpect(jsonPath("$.returnRequest.decidedAt").exists());
+        rejectReturn(seller, other, "Za późno").andExpect(status().isConflict());
+        requestReturn(buyer, other, "Jeszcze raz").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value("Pieniądze za to zamówienie zostały już zwrócone."));
+    }
+
+    private ResultActions requestReturn(UUID buyer, String orderId, String reason) throws Exception {
+        return mvc.perform(post("/api/v1/orders/" + orderId + "/returns").header(HttpHeaders.AUTHORIZATION, bearer(buyer))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"" + reason + "\"}"));
+    }
+
+    private ResultActions rejectReturn(UUID seller, String orderId, String reason) throws Exception {
+        return mvc.perform(post("/api/v1/seller/orders/" + orderId + "/returns/reject").header(HttpHeaders.AUTHORIZATION, bearer(seller))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"" + reason + "\"}"));
+    }
+
     private ResultActions carrierStatus(String orderId, String status) throws Exception {
         return mvc.perform(post("/internal/orders/" + orderId + "/shipment-status").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"status\":\"" + status + "\"}"));

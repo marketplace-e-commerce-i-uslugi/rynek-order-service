@@ -23,8 +23,6 @@ import pl.rynek.order.api.dto.TimelineEntry;
 import pl.rynek.order.orders.OrderService;
 import pl.rynek.order.orders.OrderStatus;
 
-import static pl.rynek.order.common.NotImplemented.notImplemented;
-
 @RestController
 public class OrdersController {
 
@@ -85,11 +83,13 @@ public class OrdersController {
     }
 
     /**
-     * Zgłoszenie zwrotu. Dostęp: user.
+     * Zgłoszenie zwrotu (odstąpienie od umowy): zamówienie zrealizowane, najwyżej 14 dni od doręczenia, jedno zgłoszenie.
+     * Dostęp: user (kupujący). Sprzedawca przyjmuje zwrot, zwracając pieniądze, albo odrzuca go z uzasadnieniem.
      */
     @PostMapping("/api/v1/orders/{orderId}/returns")
-    public void requestReturn(@PathVariable String orderId, @RequestBody RequestReturnRequest request) {
-        throw notImplemented();
+    public OrderResponse requestReturn(@AuthenticationPrincipal Jwt token, @PathVariable UUID orderId,
+                                       @Valid @RequestBody RequestReturnRequest request) {
+        return views.one(orders.requestReturn(userId(token), orderId, request.reason()));
     }
 
     private static UUID userId(Jwt token) {

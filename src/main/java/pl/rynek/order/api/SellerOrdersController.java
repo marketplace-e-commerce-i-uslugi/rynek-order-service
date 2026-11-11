@@ -15,6 +15,7 @@ import pl.rynek.order.api.dto.ChangeStatusRequest;
 import pl.rynek.order.api.dto.CursorPage;
 import pl.rynek.order.api.dto.MarkShippedRequest;
 import pl.rynek.order.api.dto.OrderResponse;
+import pl.rynek.order.api.dto.RejectReturnRequest;
 import pl.rynek.order.orders.OrderService;
 import pl.rynek.order.orders.OrderStatus;
 
@@ -57,6 +58,16 @@ public class SellerOrdersController {
     public OrderResponse changeStatus(@AuthenticationPrincipal Jwt token, @PathVariable UUID orderId,
                                       @Valid @RequestBody ChangeStatusRequest request) {
         return views.one(orders.changeBySeller(userId(token), orderId, OrderViews.status(request.status())));
+    }
+
+    /**
+     * Odrzucenie zgłoszonego zwrotu z uzasadnieniem dla kupującego. Dostęp: seller. Przyjęcie zwrotu to zwrot pieniędzy
+     * ({@code POST /payments/{paymentId}/refund}).
+     */
+    @PostMapping("/api/v1/seller/orders/{orderId}/returns/reject")
+    public OrderResponse rejectReturn(@AuthenticationPrincipal Jwt token, @PathVariable UUID orderId,
+                                      @Valid @RequestBody RejectReturnRequest request) {
+        return views.one(orders.rejectReturn(userId(token), orderId, request.reason()));
     }
 
     private static UUID userId(Jwt token) {

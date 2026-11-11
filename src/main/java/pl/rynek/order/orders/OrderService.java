@@ -58,11 +58,13 @@ public class OrderService {
     private final TransactionTemplate transaction;
     private final Clock clock;
     private final Duration paymentTimeout;
+    private final Duration returnWindow;
 
     public OrderService(OrderRepository orders, OrderRequestRepository requests, CatalogClient catalog, CartClient cart,
                         IdentityClient identity, ShippingClient shipping, PaymentClient payment,
                         PlatformTransactionManager transactions, Clock clock,
-                        @Value("${rynek.orders.payment-timeout:30m}") Duration paymentTimeout) {
+                        @Value("${rynek.orders.payment-timeout:30m}") Duration paymentTimeout,
+                        @Value("${rynek.orders.return-window:14d}") Duration returnWindow) {
         this.orders = orders;
         this.requests = requests;
         this.catalog = catalog;
@@ -73,6 +75,7 @@ public class OrderService {
         this.transaction = new TransactionTemplate(transactions);
         this.clock = clock;
         this.paymentTimeout = paymentTimeout;
+        this.returnWindow = returnWindow;
     }
 
     /** Zakup z koszyka tworzy jedno zamówienie na sprzedawcę; „Kup teraz” jedno zamówienie z jedną pozycją. */
@@ -150,6 +153,21 @@ public class OrderService {
     /** Wywołuje payment-service po udanej płatności. Ponowienie dla opłaconego zamówienia niczego nie zmienia. */
     public Order markPaid(UUID orderId, UUID paymentId) {
         return change(orderId, o -> true, o -> o.markPaid(paymentId, clock.instant()));
+    }
+
+    /** Zgłoszenie zwrotu przez kupującego (odstąpienie od umowy) w ciągu {@code rynek.orders.return-window} od realizacji. */
+    public Order requestReturn(UUID buyerId, UUID orderId, String reason) {
+        return change(orderId, o -> o.getBuyerId().equals(buyerId), o -> o.requestReturn(reason.trim(), returnWindow, clock.instant()));
+    }
+
+    /** Odrzucenie zgłoszonego zwrotu z uzasadnieniem. Przyjęcie to zwrot pieniędzy w payment-service. */
+    public Order rejectReturn(UUID sellerId, UUID orderId, String reason) {
+        return change(orderId, o -> o.getSellerId().equals(sellerId), o -> o.rejectReturn(reason.trim(), clock.instant()));
+    }
+
+    /** payment-service zwrócił pieniądze za zamówienie: zgłoszony zwrot jest przyjęty. Ponowienie niczego nie zmienia. */
+    public Order refunded(UUID orderId) {
+        return change(orderId, o -> true, o -> o.returnRefunded(clock.instant()));
     }
 
     /** Etykieta z shipping-service. Ponowienie z tą samą przesyłką niczego nie psuje. */

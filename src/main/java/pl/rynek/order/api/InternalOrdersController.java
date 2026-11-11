@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import pl.rynek.order.api.dto.OrderResponse;
@@ -75,6 +76,16 @@ public class InternalOrdersController {
     @PostMapping("/internal/orders/{orderId}/shipment-status")
     public OrderResponse carrierStatus(@PathVariable UUID orderId, @RequestBody CarrierStatusRequest request) {
         return views.one(orders.carrierStatus(orderId, request.status() == null ? "" : request.status()));
+    }
+
+    /**
+     * payment-service zwrócił pieniądze za zamówienie (sprzedawca albo admin): zgłoszony zwrot jest przyjęty.
+     * Ponowienie niczego nie zmienia. Dostęp: int.
+     */
+    @PostMapping("/internal/orders/{orderId}/refunded")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void refunded(@PathVariable UUID orderId) {
+        orders.refunded(orderId);
     }
 
     public record ShipmentRequest(UUID shipmentId, String carrier, String trackingNumber) {
