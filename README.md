@@ -33,6 +33,8 @@ Ekrany: 8 Płatność, Profil → Moje zamówienia, 9 Panel → Zamówienia. Sta
 | POST | `/api/v1/seller/orders/{orderId}/status` | Zmiana statusu | seller |
 | GET | `/internal/orders/{orderId}` | Kwota, status i kupujący dla payment-service | int |
 | GET | `/internal/orders?ids=` | Wiele zamówień naraz (najwyżej 100), np. statusy do salda sprzedawcy | int |
+| PUT | `/internal/orders/{orderId}/shipment` | Przesyłka z shipping-service: `shipmentId`, przewoźnik i numer przesyłki | int |
+| POST | `/internal/orders/{orderId}/shipment-status` | Status od przewoźnika: `PICKED_UP` → „W drodze”, `DELIVERED` → „Zrealizowane” | int |
 | POST | `/internal/orders/{orderId}/mark-paid` | Oznaczenie jako opłacone (po zdarzeniu z płatności) | int |
 
 ### Zasady
@@ -44,6 +46,7 @@ Ekrany: 8 Płatność, Profil → Moje zamówienia, 9 Panel → Zamówienia. Sta
 - Wygasanie: zamówienie nieopłacone dłużej niż `rynek.orders.payment-timeout` (domyślnie 30 min) jest anulowane, a jego zapas zwolniony. Sprawdzenie co `rynek.orders.expiry-check` (60 s).
 - `GET /internal/orders/{id}` (dla payment-service): `{id, number, buyerId, sellerId, status, total}`, gdzie `status` to nazwa stałej (np. `AWAITING_PAYMENT`). `mark-paid` przyjmuje opcjonalne `{paymentId}`, które trafia do `Order.paymentId` (zwrot środków).
 - Statusy: „Oczekuje na płatność” → (`mark-paid`) „Do wysłania” → (`/ship` z numerem przesyłki) „W drodze” → (`/status` „Zrealizowane”) „Zrealizowane”. Anulować może kupujący (`/cancel`) i sprzedawca (`/status` „Anulowane”) zamówienie przed wysyłką. Wysłanego nie można anulować (409).
+- Przesyłki: etykieta z shipping-service ustawia `shipmentId` i `trackingNumber` bez zmiany statusu. Odebranie paczki przez przewoźnika daje „W drodze”, a doręczenie „Zrealizowane” (także bez wcześniejszego „odebrana”). Ponowienie niczego nie zmienia, a dla anulowanego zamówienia jest 409. Sprzedawca nadal może sam oznaczyć wysyłkę (`/ship`) i realizację. `GET /internal/orders/{id}` ma dla shipping-service także `receiver` i `shipping` (metoda, paczkomat, `shipmentId`).
 - Każde anulowanie (także wygaśnięcie) trafia do payment-service: `POST /internal/orders/{id}/cancelled` zamiast zdarzenia `order.cancelled`. Payment zwraca pieniądze za opłacone zamówienie i zamyka płatności w toku. Gdy payment-service nie odpowiada, anulowanie i tak się udaje, a zgłoszenie jest ponawiane co `rynek.orders.payment-retry` (60 s, flaga `payment_notified`). Odrzucenie 4xx nie jest ponawiane i trafia do logu jako błąd do ręcznego sprawdzenia.
 - Zamówienie widzą tylko kupujący i sprzedawca (właściciel kanału); dla innych jest 404. Równoległe zmiany statusu rozstrzyga `@Version` (409).
 - `Order` ma więcej pól niż kształt z frontendu: `itemsTotal`, `shippingTotal`, `shipping {methodId, name, pickupPointId, pickupPoint}`, `trackingNumber`. `number` ma postać `#1001`.

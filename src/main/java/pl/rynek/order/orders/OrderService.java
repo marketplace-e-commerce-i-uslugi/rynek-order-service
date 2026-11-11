@@ -152,6 +152,20 @@ public class OrderService {
         return change(orderId, o -> true, o -> o.markPaid(paymentId, clock.instant()));
     }
 
+    /** Etykieta z shipping-service. Ponowienie z tą samą przesyłką niczego nie psuje. */
+    public Order attachShipment(UUID orderId, UUID shipmentId, String carrier, String trackingNumber) {
+        return change(orderId, o -> true, o -> o.attachShipment(shipmentId, carrier, trackingNumber, clock.instant()));
+    }
+
+    /** Status od przewoźnika (zamiast zdarzenia {@code shipment.status-changed}): odebrana → „W drodze”, doręczona → „Zrealizowane”. */
+    public Order carrierStatus(UUID orderId, String status) {
+        return switch (status) {
+            case "PICKED_UP" -> change(orderId, o -> true, o -> o.pickedUp(clock.instant()));
+            case "DELIVERED" -> change(orderId, o -> true, o -> o.delivered(clock.instant()));
+            default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nieznany status przesyłki.");
+        };
+    }
+
     @Transactional(readOnly = true)
     public Order internal(UUID orderId) {
         return find(orderId, o -> true);

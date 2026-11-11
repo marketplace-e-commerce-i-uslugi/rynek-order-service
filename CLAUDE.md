@@ -35,6 +35,6 @@ Legenda kolumny **Dostęp**: `pub` = bez logowania, `user` = zalogowany, `seller
 
 ## Struktura kodu
 
-- `pl.rynek.order.api`: kontrolery REST (pełne ścieżki w adnotacjach), `api.dto`: rekordy żądań i odpowiedzi, `common.NotImplemented`: odpowiedź 501; `orders`: zamówienie, statusy, składanie z rezerwacją zapasu, idempotencja; `clients`: klienci cart, catalog, identity, shipping, channel; `config`: security, błędy RFC 7807 po polsku
+- `pl.rynek.order.api`: kontrolery REST (pełne ścieżki w adnotacjach), `api.dto`: rekordy żądań i odpowiedzi, `common.NotImplemented`: odpowiedź 501; `orders`: zamówienie, statusy, składanie z rezerwacją zapasu, idempotencja; `clients`: klienci cart, catalog, identity, shipping, channel, payment; `config`: security, błędy RFC 7807 po polsku
 - Konfiguracja: `src/main/resources/application.yml`
 - Port lokalny: 8091

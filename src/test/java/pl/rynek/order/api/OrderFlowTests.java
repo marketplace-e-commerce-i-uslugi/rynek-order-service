@@ -13,6 +13,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -356,6 +357,48 @@ class OrderFlowTests {
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].id").value(a))
                 .andExpect(jsonPath("$[0].status").value("AWAITING_PAYMENT"));
+    }
+
+    @Test
+    void carrierShipmentMovesOrderToShippedAndCompleted() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 38900, 3);
+        String id = JsonPath.read(order(buyer, "k1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        UUID shipment = UUID.randomUUID();
+        String attach = "{\"shipmentId\":\"" + shipment + "\",\"carrier\":\"DPD\",\"trackingNumber\":\"12345678901234\"}";
+        // Nieopłacone: bez przesyłki.
+        mvc.perform(put("/internal/orders/" + id + "/shipment").contentType(MediaType.APPLICATION_JSON).content(attach)).andExpect(status().isConflict());
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(status().isOk());
+
+        mvc.perform(put("/internal/orders/" + id + "/shipment").contentType(MediaType.APPLICATION_JSON).content(attach))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("Do wysłania"))
+                .andExpect(jsonPath("$.shipmentId").value(shipment.toString()))
+                .andExpect(jsonPath("$.trackingNumber").value("12345678901234"));
+        mvc.perform(get("/internal/orders/" + id))
+                .andExpect(jsonPath("$.receiver.city").value("Warszawa"))
+                .andExpect(jsonPath("$.shipping.methodId").value("courier"))
+                .andExpect(jsonPath("$.shipping.shipmentId").value(shipment.toString()));
+        carrierStatus(id, "PICKED_UP").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("W drodze"));
+        carrierStatus(id, "PICKED_UP").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("W drodze"));
+        carrierStatus(id, "DELIVERED").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Zrealizowane"));
+        carrierStatus(id, "LOST").andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/orders/" + id + "/timeline").header(HttpHeaders.AUTHORIZATION, bearer(buyer)))
+                .andExpect(jsonPath("$[*].status", contains("Oczekuje na płatność", "Do wysłania", "W drodze", "Zrealizowane")));
+
+        // Doręczenie bez wcześniejszego „odebrana”: oba kroki naraz. Anulowane: 409.
+        String other = JsonPath.read(order(buyer, "k2", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + other + "/mark-paid")).andExpect(status().isOk());
+        carrierStatus(other, "DELIVERED").andExpect(jsonPath("$.status").value("Zrealizowane"));
+        String cancelled = JsonPath.read(order(buyer, "k3", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        cancel(buyer, cancelled).andExpect(status().isOk());
+        carrierStatus(cancelled, "PICKED_UP").andExpect(status().isConflict());
+    }
+
+    private ResultActions carrierStatus(String orderId, String status) throws Exception {
+        return mvc.perform(post("/internal/orders/" + orderId + "/shipment-status").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"" + status + "\"}"));
     }
 
     @Test

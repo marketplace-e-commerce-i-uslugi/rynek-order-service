@@ -86,6 +86,12 @@ public class Order {
     @Column(name = "tracking_number")
     private String trackingNumber;
 
+    /** Przesyłka z shipping-service; {@code null}, gdy sprzedawca wysłał bez etykiety z Rynku. */
+    @Column(name = "shipment_id")
+    private UUID shipmentId;
+
+    private String carrier;
+
     @Column(name = "payment_id")
     private UUID paymentId;
 
@@ -175,6 +181,35 @@ public class Order {
         moveTo(OrderStatus.SHIPPED, now);
     }
 
+    /** Etykieta utworzona w shipping-service: numer przesyłki trafia do zamówienia, status się nie zmienia. */
+    void attachShipment(UUID shipmentId, String carrier, String trackingNumber, Instant now) {
+        if (status != OrderStatus.TO_SHIP && status != OrderStatus.SHIPPED) {
+            throw conflict(status == OrderStatus.CANCELLED ? "Zamówienie zostało anulowane."
+                    : "Przesyłkę można utworzyć tylko dla zamówienia „Do wysłania”.");
+        }
+        this.shipmentId = shipmentId;
+        this.carrier = carrier;
+        this.trackingNumber = trackingNumber;
+        this.updatedAt = now;
+    }
+
+    /** Przewoźnik odebrał paczkę: „Do wysłania” → „W drodze”. Ponowienie i późniejsze statusy niczego nie zmieniają. */
+    void pickedUp(Instant now) {
+        if (status == OrderStatus.TO_SHIP) {
+            moveTo(OrderStatus.SHIPPED, now);
+        } else if (status != OrderStatus.SHIPPED && status != OrderStatus.COMPLETED) {
+            throw conflict("Zamówienie w statusie „" + status.label() + "” nie czeka na przesyłkę.");
+        }
+    }
+
+    /** Paczka doręczona: zamówienie jest zrealizowane (także gdy wcześniejszy status przewoźnika nie dotarł). */
+    void delivered(Instant now) {
+        pickedUp(now);
+        if (status == OrderStatus.SHIPPED) {
+            moveTo(OrderStatus.COMPLETED, now);
+        }
+    }
+
     void complete(Instant now) {
         if (status != OrderStatus.SHIPPED) {
             throw conflict("Zrealizować można tylko zamówienie w drodze.");
@@ -250,6 +285,14 @@ public class Order {
 
     public boolean isPaymentNotified() {
         return paymentNotified;
+    }
+
+    public UUID getShipmentId() {
+        return shipmentId;
+    }
+
+    public String getCarrier() {
+        return carrier;
     }
 
     public String getTrackingNumber() {

@@ -3,10 +3,11 @@ package pl.rynek.order.api;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -55,12 +56,52 @@ public class InternalOrdersController {
         return views.one(orders.markPaid(orderId, request == null ? null : request.paymentId()));
     }
 
-    public record InternalOrder(UUID id, String number, UUID buyerId, UUID sellerId, String status, long total) {
+    /**
+     * Przesyłka utworzona w shipping-service: {@code shipmentId}, przewoźnik i numer przesyłki trafiają do zamówienia
+     * (status się nie zmienia). Dostęp: int.
+     */
+    @PutMapping("/internal/orders/{orderId}/shipment")
+    public OrderResponse attachShipment(@PathVariable UUID orderId, @RequestBody ShipmentRequest request) {
+        if (request.shipmentId() == null || request.trackingNumber() == null || request.trackingNumber().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Podaj przesyłkę i jej numer.");
+        }
+        return views.one(orders.attachShipment(orderId, request.shipmentId(), request.carrier(), request.trackingNumber().trim()));
+    }
+
+    /**
+     * Status od przewoźnika (zamiast zdarzenia {@code shipment.status-changed}): {@code PICKED_UP} → „W drodze”,
+     * {@code DELIVERED} → „Zrealizowane”. Ponowienie niczego nie zmienia, anulowane zamówienie daje 409. Dostęp: int.
+     */
+    @PostMapping("/internal/orders/{orderId}/shipment-status")
+    public OrderResponse carrierStatus(@PathVariable UUID orderId, @RequestBody CarrierStatusRequest request) {
+        return views.one(orders.carrierStatus(orderId, request.status() == null ? "" : request.status()));
+    }
+
+    public record ShipmentRequest(UUID shipmentId, String carrier, String trackingNumber) {
+    }
+
+    public record CarrierStatusRequest(String status) {
+    }
+
+    /**
+     * {@code receiver} i {@code shipping} są dla shipping-service (dane na etykietę). {@code status} to nazwa stałej.
+     */
+    public record InternalOrder(UUID id, String number, UUID buyerId, UUID sellerId, String status, long total, Receiver receiver,
+                                Delivery shipping) {
 
         static InternalOrder of(Order o) {
+            Order.Address a = o.getAddress();
             return new InternalOrder(o.getId(), "#" + o.getNumber(), o.getBuyerId(), o.getSellerId(), o.getStatus().name(),
-                    o.getItemsTotal() + o.getShippingTotal());
+                    o.getItemsTotal() + o.getShippingTotal(),
+                    new Receiver(a.fullName(), a.phone(), a.street(), a.postalCode(), a.city()),
+                    new Delivery(o.getShippingMethodId(), o.getPickupPointId(), o.getPickupPointLabel(), o.getShipmentId()));
         }
+    }
+
+    public record Receiver(String fullName, String phone, String street, String postalCode, String city) {
+    }
+
+    public record Delivery(String methodId, String pickupPointId, String pickupPoint, UUID shipmentId) {
     }
 
     public record MarkPaidRequest(UUID paymentId) {
