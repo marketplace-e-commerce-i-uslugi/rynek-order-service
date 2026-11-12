@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -97,12 +98,12 @@ public class InternalOrdersController {
     /**
      * {@code receiver} i {@code shipping} są dla shipping-service (dane na etykietę). {@code status} to nazwa stałej.
      */
-    public record InternalOrder(UUID id, String number, UUID buyerId, UUID sellerId, String status, long total, Receiver receiver,
+    public record InternalOrder(UUID id, String number, UUID buyerId, UUID sellerId, UUID channelId, String title, String status, long total, Receiver receiver,
                                 Delivery shipping) {
 
         static InternalOrder of(Order o) {
             Order.Address a = o.getAddress();
-            return new InternalOrder(o.getId(), "#" + o.getNumber(), o.getBuyerId(), o.getSellerId(), o.getStatus().name(),
+            return new InternalOrder(o.getId(), "#" + o.getNumber(), o.getBuyerId(), o.getSellerId(), o.getChannelId(), o.getLines().isEmpty() ? null : o.getLines().get(0).title(), o.getStatus().name(),
                     o.getItemsTotal() + o.getShippingTotal(),
                     new Receiver(a.fullName(), a.phone(), a.street(), a.postalCode(), a.city()),
                     new Delivery(o.getShippingMethodId(), o.getPickupPointId(), o.getPickupPointLabel(), o.getShipmentId()));
@@ -113,6 +114,13 @@ public class InternalOrdersController {
     }
 
     public record Delivery(String methodId, String pickupPointId, String pickupPoint, UUID shipmentId) {
+    }
+
+    /** Opinia zapisana w engagement-service: kupujący nie dostaje już „Wystaw opinię”. Dostęp: int. */
+    @PutMapping("/internal/orders/{orderId}/reviewed")
+    public ResponseEntity<Void> reviewed(@PathVariable UUID orderId) {
+        orders.markReviewed(orderId);
+        return ResponseEntity.noContent().build();
     }
 
     public record MarkPaidRequest(UUID paymentId) {

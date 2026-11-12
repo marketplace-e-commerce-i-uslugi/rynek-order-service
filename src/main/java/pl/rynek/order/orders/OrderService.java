@@ -155,6 +155,11 @@ public class OrderService {
         return change(orderId, o -> true, o -> o.markPaid(paymentId, clock.instant()));
     }
 
+    /** engagement-service zapisał opinię o zamówieniu. Ponowienie niczego nie zmienia. */
+    public Order markReviewed(UUID orderId) {
+        return change(orderId, o -> true, Order::markReviewed);
+    }
+
     /** Zgłoszenie zwrotu przez kupującego (odstąpienie od umowy) w ciągu {@code rynek.orders.return-window} od realizacji. */
     public Order requestReturn(UUID buyerId, UUID orderId, String reason) {
         return change(orderId, o -> o.getBuyerId().equals(buyerId), o -> o.requestReturn(reason.trim(), returnWindow, clock.instant()));

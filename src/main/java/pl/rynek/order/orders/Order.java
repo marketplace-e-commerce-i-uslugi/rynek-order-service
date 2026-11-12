@@ -117,6 +117,9 @@ public class Order {
     @Column(name = "payment_notified")
     private boolean paymentNotified = true;
 
+    /** engagement-service zapisał opinię kupującego o tym zamówieniu. */
+    private boolean reviewed;
+
     @Column(name = "created_at")
     private Instant createdAt;
 
@@ -173,6 +176,10 @@ public class Order {
             this.paymentId = paymentId;
             moveTo(OrderStatus.TO_SHIP, now);
         }
+    }
+
+    void markReviewed() {
+        reviewed = true;
     }
 
     void cancel(Instant now) {
@@ -347,6 +354,10 @@ public class Order {
 
     public UUID getPaymentId() {
         return paymentId;
+    }
+
+    public boolean isReviewed() {
+        return reviewed;
     }
 
     public boolean isPaymentNotified() {

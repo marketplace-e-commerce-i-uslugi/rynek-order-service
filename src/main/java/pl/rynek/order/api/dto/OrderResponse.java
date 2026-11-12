@@ -26,7 +26,7 @@ public record OrderResponse(UUID id, String number, OrderStatus status, Instant 
                 MoneyDto.pln(o.getItemsTotal()), MoneyDto.pln(o.getShippingTotal()), MoneyDto.pln(o.getItemsTotal() + o.getShippingTotal()),
                 new Address(a.id(), a.fullName(), a.phone(), a.street(), a.postalCode(), a.city()),
                 new Shipping(o.getShippingMethodId(), o.getShippingMethodName(), o.getPickupPointId(), o.getPickupPointLabel()),
-                o.getTrackingNumber(), o.getShipmentId(), o.getPaymentId(), false, o.getReturnRequest());
+                o.getTrackingNumber(), o.getShipmentId(), o.getPaymentId(), o.isReviewed(), o.getReturnRequest());
     }
 
     public record Line(UUID offerId, String title, int quantity, MoneyDto unitPrice) {
