@@ -27,4 +27,10 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     @Query("select o.id from Order o where o.paymentNotified = false order by o.updatedAt")
     List<UUID> findPaymentUnnotified();
+
+    @Query("select o.id from Order o where o.returnStockPending = true order by o.updatedAt")
+    List<UUID> findReturnStockPending();
+
+    @Query("select o.id from Order o where o.shippingNotified = false order by o.updatedAt")
+    List<UUID> findShippingUnnotified();
 }

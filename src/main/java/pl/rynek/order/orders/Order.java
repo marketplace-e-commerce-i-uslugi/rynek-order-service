@@ -117,6 +117,13 @@ public class Order {
     @Column(name = "payment_notified")
     private boolean paymentNotified = true;
 
+    /** {@code true}: przyjęty zwrot czeka na oddanie sztuk do zapasu w catalog (ponawiane, dopóki catalog nie odpowie). */
+    @Column(name = "return_stock_pending")
+    private boolean returnStockPending = false;
+
+    @Column(name = "shipping_notified")
+    private boolean shippingNotified = true;
+
     /** engagement-service zapisał opinię kupującego o tym zamówieniu. */
     private boolean reviewed;
 
@@ -191,10 +198,23 @@ public class Order {
         }
         moveTo(OrderStatus.CANCELLED, now);
         this.paymentNotified = false;
+        this.shippingNotified = false;
     }
 
     void paymentNotified() {
         this.paymentNotified = true;
+    }
+
+    void returnStockRestored() {
+        this.returnStockPending = false;
+    }
+
+    public boolean isReturnStockPending() {
+        return returnStockPending;
+    }
+
+    void shippingNotified() {
+        this.shippingNotified = true;
     }
 
     void ship(String trackingNumber, Instant now) {
@@ -275,6 +295,7 @@ public class Order {
         if (returnStatus == ReturnStatus.REQUESTED) {
             this.returnStatus = ReturnStatus.REFUNDED;
             this.returnDecidedAt = now;
+            this.returnStockPending = true;
             this.updatedAt = now;
         }
     }
@@ -362,6 +383,10 @@ public class Order {
 
     public boolean isPaymentNotified() {
         return paymentNotified;
+    }
+
+    public boolean isShippingNotified() {
+        return shippingNotified;
     }
 
     public UUID getShipmentId() {

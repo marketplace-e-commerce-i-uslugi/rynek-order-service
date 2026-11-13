@@ -172,7 +172,36 @@ public class OrderService {
 
     /** payment-service zwrócił pieniądze za zamówienie: zgłoszony zwrot jest przyjęty. Ponowienie niczego nie zmienia. */
     public Order refunded(UUID orderId) {
-        return change(orderId, o -> true, o -> o.returnRefunded(clock.instant()));
+        Order order = change(orderId, o -> true, o -> o.returnRefunded(clock.instant()));
+        return order.isReturnStockPending() ? restoreReturnedStock(orderId) : order;
+    }
+
+    /** Ponawia przywrócenie zapasu po przyjętych zwrotach, na które catalog jeszcze nie odpowiedział. */
+    @Scheduled(fixedDelayString = "${rynek.orders.payment-retry:60s}", initialDelayString = "${rynek.orders.payment-retry:60s}")
+    public void restoreReturnedStockPending() {
+        orders.findReturnStockPending().forEach(this::restoreReturnedStock);
+    }
+
+    /**
+     * Oddaje do zapasu sztuki z przyjętego zwrotu. Niedostępny catalog nie blokuje przyjęcia zwrotu: flaga zostaje, a
+     * zgłoszenie (idempotentne po id pozycji) pójdzie ponownie. Odrzucenie (4xx) nie jest ponawiane.
+     */
+    private Order restoreReturnedStock(UUID orderId) {
+        Order order = find(orderId, o -> true);
+        boolean unavailable = false;
+        for (Line line : order.getLines()) {
+            CatalogClient.Result result = catalog.restore(line.offerId(), line.id(), line.quantity());
+            unavailable |= result == CatalogClient.Result.UNAVAILABLE;
+        }
+        if (unavailable) {
+            log.warn("Zamówienie {}: catalog nie odpowiada, ponowimy przywrócenie zapasu po zwrocie", orderId);
+            return order;
+        }
+        try {
+            return change(orderId, o -> true, Order::returnStockRestored);
+        } catch (ResponseStatusException e) {
+            return find(orderId, o -> true);
+        }
     }
 
     /** Etykieta z shipping-service. Ponowienie z tą samą przesyłką niczego nie psuje. */
@@ -223,10 +252,37 @@ public class OrderService {
         orders.findPaymentUnnotified().forEach(this::notifyPayment);
     }
 
+    /** Ponawia zgłoszenia anulowania, których shipping-service jeszcze nie przyjął. */
+    @Scheduled(fixedDelayString = "${rynek.orders.shipping-retry:60s}", initialDelayString = "${rynek.orders.shipping-retry:60s}")
+    public void notifyShippingPending() {
+        orders.findShippingUnnotified().forEach(this::notifyShipping);
+    }
+
     private Order cancel(UUID orderId, Predicate<Order> allowed) {
         Order cancelled = change(orderId, allowed, o -> o.cancel(clock.instant()));
         release(cancelled.getLines());
-        return notifyPayment(cancelled.getId());
+        notifyPayment(cancelled.getId());
+        return notifyShipping(cancelled.getId());
+    }
+
+    /**
+     * Anulowanie przesyłki z etykietą (jeśli jest). Odrzucenie (4xx) nie jest ponawiane i trafia do logu; nieudane
+     * zgłoszenie nie blokuje anulowania zamówienia ani zwrotu pieniędzy.
+     */
+    private Order notifyShipping(UUID orderId) {
+        ShippingClient.Result result = shipping.orderCancelled(orderId);
+        if (result == ShippingClient.Result.UNAVAILABLE) {
+            log.warn("Zamówienie {}: shipping-service nie odpowiada, ponowimy zgłoszenie anulowania", orderId);
+            return find(orderId, o -> true);
+        }
+        if (result == ShippingClient.Result.REJECTED) {
+            log.error("Zamówienie {}: shipping-service odrzucił zgłoszenie anulowania, sprawdź przesyłkę ręcznie", orderId);
+        }
+        try {
+            return change(orderId, o -> true, Order::shippingNotified);
+        } catch (ResponseStatusException e) {
+            return find(orderId, o -> true);
+        }
     }
 
     /**

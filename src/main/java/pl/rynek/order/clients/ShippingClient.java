@@ -29,6 +29,21 @@ public class ShippingClient {
         return get("/internal/shipping/pickup-points/{id}", pointId, PickupPoint.class);
     }
 
+    /** {@code DONE}: przyjęte; {@code REJECTED}: błąd 4xx, ponawianie nic nie da; {@code UNAVAILABLE}: spróbować później. */
+    public enum Result { DONE, REJECTED, UNAVAILABLE }
+
+    /** Zamówienie anulowane: shipping-service anuluje przesyłkę, jeśli paczka nie została jeszcze odebrana. Idempotentne. */
+    public Result orderCancelled(java.util.UUID orderId) {
+        try {
+            http.post().uri("/internal/orders/{id}/cancelled", orderId).retrieve().toBodilessEntity();
+            return Result.DONE;
+        } catch (HttpClientErrorException e) {
+            return Result.REJECTED;
+        } catch (RestClientResponseException | ResourceAccessException e) {
+            return Result.UNAVAILABLE;
+        }
+    }
+
     private <T> Optional<T> get(String path, String id, Class<T> type) {
         try {
             return Optional.ofNullable(http.get().uri(path, id).retrieve().body(type));

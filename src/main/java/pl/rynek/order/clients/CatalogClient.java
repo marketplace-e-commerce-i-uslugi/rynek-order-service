@@ -71,6 +71,23 @@ public class CatalogClient {
         }
     }
 
+    /** {@code DONE}: przyjęte (także ponowienie); {@code REJECTED}: 4xx, ponawianie nic nie da; {@code UNAVAILABLE}: spróbować później. */
+    public enum Result { DONE, REJECTED, UNAVAILABLE }
+
+    /** Przywrócenie sztuk po przyjętym zwrocie. Idempotentne po stronie catalog (po id rezerwacji = id pozycji). */
+    public Result restore(UUID offerId, UUID reservationId, int quantity) {
+        try {
+            http.post().uri("/internal/offers/{id}/stock/return", offerId)
+                    .body(Map.of("reservationId", reservationId, "quantity", quantity)).retrieve().toBodilessEntity();
+            return Result.DONE;
+        } catch (HttpClientErrorException e) {
+            log.error("Catalog odrzucił przywrócenie zapasu (oferta {}, pozycja {}): {}", offerId, reservationId, e.getStatusCode());
+            return Result.REJECTED;
+        } catch (RestClientResponseException | ResourceAccessException e) {
+            return Result.UNAVAILABLE;
+        }
+    }
+
     public record OfferInfo(UUID offerId, String type, Money price, Integer stock, boolean available, String title,
                             UUID channelId, UUID ownerId, String thumbnailUrl, int tone) {
 

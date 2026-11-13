@@ -104,6 +104,8 @@ class OrderFlowTests {
     final Map<UUID, OfferInfo> offers = new ConcurrentHashMap<>();
     final Map<UUID, Integer> stock = new ConcurrentHashMap<>();
     final Map<UUID, Integer> reservations = new ConcurrentHashMap<>();
+    final java.util.Set<UUID> restored = ConcurrentHashMap.newKeySet();
+    volatile boolean catalogDown;
     final Map<UUID, CartSnapshot> carts = new ConcurrentHashMap<>();
 
     @BeforeEach
@@ -134,6 +136,15 @@ class OrderFlowTests {
             }
             return null;
         }).given(catalog).reserve(any(), any(), anyInt(), anyString());
+        given(catalog.restore(any(), any(), anyInt())).willAnswer(call -> {
+            if (catalogDown) {
+                return CatalogClient.Result.UNAVAILABLE;
+            }
+            if (restored.add(call.<UUID>getArgument(1))) {
+                stock.merge(call.getArgument(0), call.<Integer>getArgument(2), Integer::sum);
+            }
+            return CatalogClient.Result.DONE;
+        });
         given(catalog.release(any(), any())).willAnswer(call -> {
             synchronized (stock) {
                 Integer quantity = reservations.remove(call.<UUID>getArgument(1));
@@ -348,6 +359,34 @@ class OrderFlowTests {
     }
 
     @Test
+    void cancellationIsReportedToShippingAndRetriedWhenItIsDown() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 38900, 2);
+        String first = JsonPath.read(order(buyer, "s1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        String second = JsonPath.read(order(buyer, "s2", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + first + "/mark-paid")).andExpect(status().isOk());
+        mvc.perform(post("/internal/orders/" + second + "/mark-paid")).andExpect(status().isOk());
+        given(payment.orderCancelled(any())).willReturn(PaymentClient.Result.DONE);
+
+        given(shipping.orderCancelled(any())).willReturn(ShippingClient.Result.DONE);
+        cancel(buyer, first).andExpect(status().isOk());
+        verify(shipping).orderCancelled(UUID.fromString(first));
+        assertThat(repository.findById(UUID.fromString(first)).orElseThrow().isShippingNotified()).isTrue();
+
+        // shipping-service nie odpowiada: anulowanie i zwrot się udają, zgłoszenie czeka na ponowienie.
+        given(shipping.orderCancelled(any())).willReturn(ShippingClient.Result.UNAVAILABLE);
+        setStatus(seller, second, "Anulowane").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Anulowane"));
+        assertThat(repository.findById(UUID.fromString(second)).orElseThrow().isShippingNotified()).isFalse();
+        assertThat(repository.findById(UUID.fromString(second)).orElseThrow().isPaymentNotified()).isTrue();
+
+        given(shipping.orderCancelled(any())).willReturn(ShippingClient.Result.DONE);
+        service.notifyShippingPending();
+        assertThat(repository.findById(UUID.fromString(second)).orElseThrow().isShippingNotified()).isTrue();
+        verify(shipping, times(2)).orderCancelled(UUID.fromString(second));
+    }
+
+    @Test
     void internalBatchReturnsKnownOrders() throws Exception {
         UUID buyer = UUID.randomUUID();
         UUID drill = product(UUID.randomUUID(), 1000, 5);
@@ -446,6 +485,48 @@ class OrderFlowTests {
         rejectReturn(seller, other, "Za późno").andExpect(status().isConflict());
         requestReturn(buyer, other, "Jeszcze raz").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.detail").value("Pieniądze za to zamówienie zostały już zwrócone."));
+    }
+
+    @Test
+    void acceptedReturnRestoresStockAndRetriesWhenCatalogIsDown() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 38900, 5);
+        String id = deliveredReturnRequest(buyer, drill, "r1", 2);
+        org.junit.jupiter.api.Assertions.assertEquals(3, stock.get(drill));
+
+        // Zwrot bez zgłoszenia (zwrot z własnej inicjatywy) nie rusza zapasu.
+        String plain = JsonPath.read(order(buyer, "r2", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + plain + "/mark-paid")).andExpect(status().isOk());
+        carrierStatus(plain, "DELIVERED").andExpect(status().isOk());
+        mvc.perform(post("/internal/orders/" + plain + "/refunded")).andExpect(status().isNoContent());
+        org.junit.jupiter.api.Assertions.assertEquals(2, stock.get(drill));
+
+        // Catalog nie odpowiada: zwrot i tak jest przyjęty, a zapas wraca przy ponowieniu.
+        catalogDown = true;
+        mvc.perform(post("/internal/orders/" + id + "/refunded")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(seller)))
+                .andExpect(jsonPath("$.returnRequest.status").value("Pieniądze zwrócone"));
+        org.junit.jupiter.api.Assertions.assertEquals(2, stock.get(drill));
+        service.restoreReturnedStockPending();
+        org.junit.jupiter.api.Assertions.assertEquals(2, stock.get(drill));
+
+        catalogDown = false;
+        service.restoreReturnedStockPending();
+        org.junit.jupiter.api.Assertions.assertEquals(4, stock.get(drill));
+        // Dalsze ponowienia i powtórne refunded nie oddają sztuk drugi raz (flaga zdjęta).
+        service.restoreReturnedStockPending();
+        mvc.perform(post("/internal/orders/" + id + "/refunded")).andExpect(status().isNoContent());
+        org.junit.jupiter.api.Assertions.assertEquals(4, stock.get(drill));
+        org.junit.jupiter.api.Assertions.assertEquals(1, restored.size());
+    }
+
+    private String deliveredReturnRequest(UUID buyer, UUID offer, String key, int quantity) throws Exception {
+        String id = JsonPath.read(order(buyer, key, buyNow(buyer, offer, quantity, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(status().isOk());
+        carrierStatus(id, "DELIVERED").andExpect(status().isOk());
+        requestReturn(buyer, id, "Nie pasuje").andExpect(status().isOk());
+        return id;
     }
 
     private ResultActions requestReturn(UUID buyer, String orderId, String reason) throws Exception {
