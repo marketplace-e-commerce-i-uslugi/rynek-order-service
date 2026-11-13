@@ -55,13 +55,14 @@ public class OrderService {
     private final PaymentClient payment;
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
+    private final OrderNotifications notices;
     private final TransactionTemplate transaction;
     private final Clock clock;
     private final Duration paymentTimeout;
     private final Duration returnWindow;
 
     public OrderService(OrderRepository orders, OrderRequestRepository requests, CatalogClient catalog, CartClient cart,
-                        IdentityClient identity, ShippingClient shipping, PaymentClient payment,
+                        IdentityClient identity, ShippingClient shipping, PaymentClient payment, OrderNotifications notices,
                         PlatformTransactionManager transactions, Clock clock,
                         @Value("${rynek.orders.payment-timeout:30m}") Duration paymentTimeout,
                         @Value("${rynek.orders.return-window:14d}") Duration returnWindow) {
@@ -72,6 +73,7 @@ public class OrderService {
         this.identity = identity;
         this.shipping = shipping;
         this.payment = payment;
+        this.notices = notices;
         this.transaction = new TransactionTemplate(transactions);
         this.clock = clock;
         this.paymentTimeout = paymentTimeout;
@@ -132,19 +134,31 @@ public class OrderService {
     }
 
     public Order cancelByBuyer(UUID buyerId, UUID orderId) {
-        return cancel(orderId, o -> o.getBuyerId().equals(buyerId));
+        Order cancelled = cancel(orderId, o -> o.getBuyerId().equals(buyerId));
+        notices.cancelledByBuyer(cancelled);
+        return cancelled;
     }
 
     public Order ship(UUID sellerId, UUID orderId, String trackingNumber) {
-        return change(orderId, o -> o.getSellerId().equals(sellerId), o -> o.ship(trackingNumber.trim(), clock.instant()));
+        Order shipped = change(orderId, o -> o.getSellerId().equals(sellerId), o -> o.ship(trackingNumber.trim(), clock.instant()));
+        notices.shipped(shipped);
+        return shipped;
     }
 
     /** Sprzedawca może oznaczyć zamówienie w drodze jako zrealizowane albo anulować niewysłane. */
     public Order changeBySeller(UUID sellerId, UUID orderId, OrderStatus status) {
         Predicate<Order> own = o -> o.getSellerId().equals(sellerId);
         return switch (status) {
-            case COMPLETED -> change(orderId, own, o -> o.complete(clock.instant()));
-            case CANCELLED -> cancel(orderId, own);
+            case COMPLETED -> {
+                Order completed = change(orderId, own, o -> o.complete(clock.instant()));
+                notices.completed(completed);
+                yield completed;
+            }
+            case CANCELLED -> {
+                Order cancelled = cancel(orderId, own);
+                notices.cancelledBySeller(cancelled);
+                yield cancelled;
+            }
             case SHIPPED -> throw unprocessable("Aby wysłać zamówienie, podaj numer przesyłki.");
             default -> throw unprocessable("Nie możesz ręcznie ustawić statusu „" + status.label() + "”.");
         };
@@ -152,7 +166,9 @@ public class OrderService {
 
     /** Wywołuje payment-service po udanej płatności. Ponowienie dla opłaconego zamówienia niczego nie zmienia. */
     public Order markPaid(UUID orderId, UUID paymentId) {
-        return change(orderId, o -> true, o -> o.markPaid(paymentId, clock.instant()));
+        Order paid = change(orderId, o -> true, o -> o.markPaid(paymentId, clock.instant()));
+        notices.paid(paid);
+        return paid;
     }
 
     /** engagement-service zapisał opinię o zamówieniu. Ponowienie niczego nie zmienia. */
@@ -162,17 +178,22 @@ public class OrderService {
 
     /** Zgłoszenie zwrotu przez kupującego (odstąpienie od umowy) w ciągu {@code rynek.orders.return-window} od realizacji. */
     public Order requestReturn(UUID buyerId, UUID orderId, String reason) {
-        return change(orderId, o -> o.getBuyerId().equals(buyerId), o -> o.requestReturn(reason.trim(), returnWindow, clock.instant()));
+        Order requested = change(orderId, o -> o.getBuyerId().equals(buyerId), o -> o.requestReturn(reason.trim(), returnWindow, clock.instant()));
+        notices.returnRequested(requested);
+        return requested;
     }
 
     /** Odrzucenie zgłoszonego zwrotu z uzasadnieniem. Przyjęcie to zwrot pieniędzy w payment-service. */
     public Order rejectReturn(UUID sellerId, UUID orderId, String reason) {
-        return change(orderId, o -> o.getSellerId().equals(sellerId), o -> o.rejectReturn(reason.trim(), clock.instant()));
+        Order rejected = change(orderId, o -> o.getSellerId().equals(sellerId), o -> o.rejectReturn(reason.trim(), clock.instant()));
+        notices.returnRejected(rejected);
+        return rejected;
     }
 
     /** payment-service zwrócił pieniądze za zamówienie: zgłoszony zwrot jest przyjęty. Ponowienie niczego nie zmienia. */
     public Order refunded(UUID orderId) {
         Order order = change(orderId, o -> true, o -> o.returnRefunded(clock.instant()));
+        notices.refunded(order);
         return order.isReturnStockPending() ? restoreReturnedStock(orderId) : order;
     }
 
@@ -212,8 +233,16 @@ public class OrderService {
     /** Status od przewoźnika (zamiast zdarzenia {@code shipment.status-changed}): odebrana → „W drodze”, doręczona → „Zrealizowane”. */
     public Order carrierStatus(UUID orderId, String status) {
         return switch (status) {
-            case "PICKED_UP" -> change(orderId, o -> true, o -> o.pickedUp(clock.instant()));
-            case "DELIVERED" -> change(orderId, o -> true, o -> o.delivered(clock.instant()));
+            case "PICKED_UP" -> {
+                Order pickedUp = change(orderId, o -> true, o -> o.pickedUp(clock.instant()));
+                notices.shipped(pickedUp);
+                yield pickedUp;
+            }
+            case "DELIVERED" -> {
+                Order delivered = change(orderId, o -> true, o -> o.delivered(clock.instant()));
+                notices.completed(delivered);
+                yield delivered;
+            }
             default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nieznany status przesyłki.");
         };
     }
@@ -238,7 +267,7 @@ public class OrderService {
         Instant deadline = clock.instant().minus(paymentTimeout);
         for (UUID id : orders.findAwaitingPaymentBefore(deadline)) {
             try {
-                cancel(id, o -> o.getStatus() == OrderStatus.AWAITING_PAYMENT);
+                notices.expired(cancel(id, o -> o.getStatus() == OrderStatus.AWAITING_PAYMENT));
                 log.info("Zamówienie {} wygasło bez płatności", id);
             } catch (ResponseStatusException e) {
                 log.debug("Zamówienie {} nie wygasło: {}", id, e.getReason());

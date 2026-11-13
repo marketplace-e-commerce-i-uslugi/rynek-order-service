@@ -6,8 +6,11 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willAnswer;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -54,6 +57,7 @@ import pl.rynek.order.clients.CatalogClient.OfferInfo;
 import pl.rynek.order.clients.ChannelClient;
 import pl.rynek.order.clients.ChannelClient.ChannelRef;
 import pl.rynek.order.clients.IdentityClient;
+import pl.rynek.order.clients.NotificationClient;
 import pl.rynek.order.clients.PaymentClient;
 import pl.rynek.order.clients.IdentityClient.Address;
 import pl.rynek.order.clients.ShippingClient;
@@ -100,6 +104,9 @@ class OrderFlowTests {
 
     @MockitoBean
     PaymentClient payment;
+
+    @MockitoBean
+    NotificationClient notifications;
 
     final Map<UUID, OfferInfo> offers = new ConcurrentHashMap<>();
     final Map<UUID, Integer> stock = new ConcurrentHashMap<>();
@@ -542,6 +549,51 @@ class OrderFlowTests {
     private ResultActions carrierStatus(String orderId, String status) throws Exception {
         return mvc.perform(post("/internal/orders/" + orderId + "/shipment-status").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"status\":\"" + status + "\"}"));
+    }
+
+    /** Powiadomienia w dzwonku: każda strona dowiaduje się o tym, co ją dotyczy; klucz zdarzenia chroni przed dubletami. */
+    @Test
+    void orderChangesAreReportedToNotificationService() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 38900, 5);
+        String id = JsonPath.read(order(buyer, "n1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        verify(notifications, never()).send(any(), anyString(), anyString(), anyString(), any(), any());
+
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid")).andExpect(status().isOk());
+        verify(notifications, atLeastOnce()).send(eq(seller), eq("orders"), startsWith("Zamówienie #"), org.mockito.ArgumentMatchers.contains("Opłacone"),
+                eq("/sprzedawca/zamowienia"), eq("order-" + id + "-paid-seller"));
+        ship(seller, id, "{\"trackingNumber\":\"6200000000001\"}").andExpect(status().isOk());
+        verify(notifications, atLeastOnce()).send(eq(buyer), eq("orders"), startsWith("Zamówienie #"), org.mockito.ArgumentMatchers.contains("w drodze"),
+                eq("/profil/zamowienia"), eq("order-" + id + "-shipped"));
+        carrierStatus(id, "DELIVERED").andExpect(status().isOk());
+        verify(notifications, atLeastOnce()).send(eq(buyer), eq("orders"), startsWith("Zamówienie #"), org.mockito.ArgumentMatchers.contains("zrealizowane"),
+                eq("/profil/zamowienia"), eq("order-" + id + "-completed"));
+        requestReturn(buyer, id, "Nie pasuje").andExpect(status().isOk());
+        verify(notifications, atLeastOnce()).send(eq(seller), eq("orders"), anyString(), org.mockito.ArgumentMatchers.contains("zgłosił zwrot"),
+                eq("/sprzedawca/zamowienia"), eq("order-" + id + "-return-requested-seller"));
+        mvc.perform(post("/internal/orders/" + id + "/refunded")).andExpect(status().isNoContent());
+        verify(notifications, atLeastOnce()).send(eq(buyer), eq("orders"), anyString(), org.mockito.ArgumentMatchers.contains("Zwrot przyjęty"),
+                eq("/profil/zamowienia"), eq("order-" + id + "-return-accepted"));
+
+        String cancelledByBuyer = JsonPath.read(order(buyer, "n2", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        cancel(buyer, cancelledByBuyer).andExpect(status().isOk());
+        verify(notifications).send(eq(seller), eq("orders"), anyString(), org.mockito.ArgumentMatchers.contains("Kupujący anulował"),
+                eq("/sprzedawca/zamowienia"), eq("order-" + cancelledByBuyer + "-cancelled-seller"));
+
+        String cancelledBySeller = JsonPath.read(order(buyer, "n3", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        setStatus(seller, cancelledBySeller, "Anulowane").andExpect(status().isOk());
+        verify(notifications).send(eq(buyer), eq("orders"), anyString(), org.mockito.ArgumentMatchers.contains("Sprzedawca anulował"),
+                eq("/profil/zamowienia"), eq("order-" + cancelledBySeller + "-cancelled"));
+
+        // Awaria notification-service nie psuje zamówienia: klient połyka błędy, a stan zamówienia nie zależy od wysyłki.
+        String rejected = JsonPath.read(order(buyer, "n4", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + rejected + "/mark-paid")).andExpect(status().isOk());
+        carrierStatus(rejected, "DELIVERED").andExpect(status().isOk());
+        requestReturn(buyer, rejected, "Nie działa").andExpect(status().isOk());
+        rejectReturn(seller, rejected, "Ślady użytkowania.").andExpect(status().isOk());
+        verify(notifications, atLeastOnce()).send(eq(buyer), eq("orders"), anyString(), org.mockito.ArgumentMatchers.contains("odrzucił zwrot"),
+                eq("/profil/zamowienia"), eq("order-" + rejected + "-return-rejected"));
     }
 
     @Test

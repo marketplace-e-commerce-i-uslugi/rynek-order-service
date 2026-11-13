@@ -22,6 +22,8 @@ rynek:
     url: ${CHANNEL_SERVICE_URL:http://localhost:8082}
   shipping:
     url: ${SHIPPING_SERVICE_URL:http://localhost:8094}
+  notification:
+    url: ${NOTIFICATION_SERVICE_URL:http://localhost:8095}
   cart:
     url: ${CART_SERVICE_URL:http://localhost:8090}
   identity:

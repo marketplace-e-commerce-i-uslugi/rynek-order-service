@@ -68,7 +68,7 @@ Wiersze z §17, w których występuje `order` (publikuje lub słucha).
 ## Dane i zależności
 
 - **Magazyn danych:** PostgreSQL (baza `orders`)
-- **Zależności:** cart-service (`/internal/carts`), catalog-service (`price-and-stock`, rezerwacja i zwolnienie zapasu), identity-service (adres), shipping-service (cena dostawy, punkt odbioru), channel-service (nagłówek sprzedawcy), payment-service (`POST /internal/orders/{id}/cancelled`); payment-service woła `mark-paid` i `GET /internal/orders`
+- **Zależności:** cart-service (`/internal/carts`), catalog-service (`price-and-stock`, rezerwacja i zwolnienie zapasu), identity-service (adres), shipping-service (cena dostawy, punkt odbioru), channel-service (nagłówek sprzedawcy), payment-service (`POST /internal/orders/{id}/cancelled`); notification-service (`POST /internal/notifications`, best effort: sprzedawca dostaje powiadomienie o opłaconym zamówieniu, anulowaniu i zgłoszonym zwrocie, kupujący o wysyłce, realizacji, anulowaniu i decyzji w sprawie zwrotu, klucz zdarzenia `order-<id>-<zdarzenie>` chroni przed dubletami; adres w `NOTIFICATION_SERVICE_URL`); payment-service woła `mark-paid` i `GET /internal/orders`
 - **Kontrakty:** `rynek-contracts/openapi/` i `rynek-contracts/events/`
 - **Lokalne uruchomienie:** `rynek-infra/local/`
 
