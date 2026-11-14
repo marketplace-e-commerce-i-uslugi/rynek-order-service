@@ -252,6 +252,12 @@ public class OrderService {
         return find(orderId, o -> true);
     }
 
+    /** Sprzedaż kanału dla analytics-service: zamówienia opłacone w przedziale {@code [from, to)} i nieanulowane. */
+    @Transactional(readOnly = true)
+    public List<Order> paidSales(UUID channelId, java.time.Instant from, java.time.Instant to) {
+        return orders.findPaidOfChannel(channelId, from, to);
+    }
+
     /** Zamówienia do salda sprzedawcy w payment-service; nieistniejące są pomijane. */
     @Transactional(readOnly = true)
     public List<Order> internal(List<UUID> orderIds) {

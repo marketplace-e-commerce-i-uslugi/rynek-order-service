@@ -2,7 +2,7 @@
 
 `order-service` — zamówienia
 
-> Status: **zamówienia działają** (PostgreSQL + Flyway, JWT z JWKS identity): złożenie z koszyka i „Kup teraz” z rezerwacją zapasu, moje zamówienia, szczegóły, oś statusów, anulowanie, panel sprzedawcy (lista, wysyłka, zmiana statusu), `mark-paid` i wygasanie nieopłaconych zamówień po 30 minutach. Zgłoszenie zwrotu zwraca `501 Not Implemented`. Zdarzeń Kafka jeszcze nie ma; zależne serwisy są wołane synchronicznie przez `/internal`.
+> Status: **zamówienia działają** (PostgreSQL + Flyway, JWT z JWKS identity): złożenie z koszyka i „Kup teraz” z rezerwacją zapasu, moje zamówienia, szczegóły, oś statusów, anulowanie, panel sprzedawcy (lista, wysyłka, zmiana statusu), `mark-paid` i wygasanie nieopłaconych zamówień po 30 minutach. Zgłoszenie zwrotu zwraca `501 Not Implemented`. Zdarzeń Kafka jeszcze nie ma; zależne serwisy są wołane synchronicznie przez `/internal`. Dla analytics-service: `GET /internal/analytics/sales?channelId=&from=&to=` oddaje zamówienia kanału opłacone w przedziale (chwila wejścia w „Do wysłania”), bez anulowanych: `{id, at, amount (towary, w groszach), lines[{offerId, quantity}]}`, przedział najwyżej 400 dni.
 
 ## Uruchomienie
 

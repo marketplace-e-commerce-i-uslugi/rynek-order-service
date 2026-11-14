@@ -320,6 +320,36 @@ class OrderFlowTests {
     }
 
     @Test
+    void salesForAnalyticsCountOnlyPaidAndNotCancelledOrdersInTheRange() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 38900, 5);
+        String unpaid = JsonPath.read(order(buyer, "s1", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        String paid = JsonPath.read(order(buyer, "s2", buyNow(buyer, drill, 2, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        String refunded = JsonPath.read(order(buyer, "s3", buyNow(buyer, drill, 1, "courier", null)).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + paid + "/mark-paid")).andExpect(status().isOk());
+        mvc.perform(post("/internal/orders/" + refunded + "/mark-paid")).andExpect(status().isOk());
+        cancel(buyer, refunded).andExpect(status().isOk());
+
+        String from = java.time.Instant.now().minusSeconds(3600).toString();
+        String to = java.time.Instant.now().plusSeconds(3600).toString();
+        mvc.perform(get("/internal/analytics/sales").param("channelId", channelOf(seller).toString()).param("from", from).param("to", to))
+                .andExpect(status().isOk()).andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id").value(paid)).andExpect(jsonPath("$[0].amount").value(2 * 38900))
+                .andExpect(jsonPath("$[0].lines[0].offerId").value(drill.toString())).andExpect(jsonPath("$[0].lines[0].quantity").value(2))
+                .andExpect(jsonPath("$[0].at").isNotEmpty());
+        // Poza przedziałem, inny kanał i zły przedział.
+        mvc.perform(get("/internal/analytics/sales").param("channelId", channelOf(seller).toString())
+                .param("from", java.time.Instant.now().plusSeconds(7200).toString()).param("to", java.time.Instant.now().plusSeconds(10800).toString()))
+                .andExpect(jsonPath("$", hasSize(0)));
+        mvc.perform(get("/internal/analytics/sales").param("channelId", channelOf(UUID.randomUUID()).toString()).param("from", from).param("to", to))
+                .andExpect(jsonPath("$", hasSize(0)));
+        mvc.perform(get("/internal/analytics/sales").param("channelId", channelOf(seller).toString()).param("from", to).param("to", from))
+                .andExpect(status().isBadRequest());
+        assertThat(unpaid).isNotEqualTo(paid);
+    }
+
+    @Test
     void cancellationReturnsStockOnce() throws Exception {
         UUID buyer = UUID.randomUUID();
         UUID seller = UUID.randomUUID();

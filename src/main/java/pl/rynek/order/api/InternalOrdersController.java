@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import pl.rynek.order.api.dto.SaleResponse;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.http.ResponseEntity;
@@ -48,6 +49,21 @@ public class InternalOrdersController {
     }
 
     static final int MAX_BATCH = 100;
+    private static final java.time.Duration MAX_SALES_RANGE = java.time.Duration.ofDays(400);
+
+    /**
+     * Sprzedaż kanału dla analytics-service: zamówienia opłacone w {@code [from, to)} (chwila wejścia w „Do wysłania”), bez
+     * anulowanych. Przedział najwyżej 400 dni. Dostęp: int.
+     */
+    @GetMapping("/internal/analytics/sales")
+    public List<SaleResponse> getSales(@RequestParam UUID channelId, @RequestParam java.time.Instant from, @RequestParam java.time.Instant to) {
+        if (!to.isAfter(from) || java.time.Duration.between(from, to).compareTo(MAX_SALES_RANGE) > 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Podaj przedział od–do, najwyżej 400 dni.");
+        }
+        return orders.paidSales(channelId, from, to).stream().map(o -> new SaleResponse(o.getId(),
+                o.getHistory().stream().filter(h -> h.status() == pl.rynek.order.orders.OrderStatus.TO_SHIP).map(h -> h.at()).findFirst().orElse(from),
+                o.getItemsTotal(), o.getLines().stream().map(l -> new SaleResponse.Line(l.offerId(), l.quantity())).toList())).toList();
+    }
 
     /**
      * Oznaczenie jako opłacone (po zdarzeniu z płatności): „Oczekuje na płatność” → „Do wysłania”. Ponowienie nic nie

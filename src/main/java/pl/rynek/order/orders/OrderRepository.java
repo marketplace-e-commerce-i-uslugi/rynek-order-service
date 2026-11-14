@@ -22,6 +22,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     List<Order> findByIdIn(Collection<UUID> ids);
 
+    /** Zamówienia kanału opłacone w przedziale (wejście w „Do wysłania”), bez anulowanych (te dostały zwrot pieniędzy). */
+    @Query(value = "select o.* from orders o where o.channel_id = :channelId and o.status <> 'CANCELLED' and exists (select 1 from order_status_history h "
+            + "where h.order_id = o.id and h.status = 'TO_SHIP' and h.at >= :from and h.at < :to) order by o.created_at, o.id", nativeQuery = true)
+    List<Order> findPaidOfChannel(UUID channelId, java.time.Instant from, java.time.Instant to);
+
     @Query("select o.id from Order o where o.status = pl.rynek.order.orders.OrderStatus.AWAITING_PAYMENT and o.createdAt < :deadline")
     List<UUID> findAwaitingPaymentBefore(java.time.Instant deadline);
 
