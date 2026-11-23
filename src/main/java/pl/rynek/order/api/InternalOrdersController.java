@@ -101,8 +101,8 @@ public class InternalOrdersController {
      */
     @PostMapping("/internal/orders/{orderId}/refunded")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void refunded(@PathVariable UUID orderId) {
-        orders.refunded(orderId);
+    public void refunded(@PathVariable UUID orderId, @org.springframework.web.bind.annotation.RequestParam(defaultValue = "false") boolean full) {
+        orders.refunded(orderId, full);
     }
 
     public record ShipmentRequest(UUID shipmentId, String carrier, String trackingNumber) {
@@ -114,13 +114,13 @@ public class InternalOrdersController {
     /**
      * {@code receiver} i {@code shipping} są dla shipping-service (dane na etykietę). {@code status} to nazwa stałej.
      */
-    public record InternalOrder(UUID id, String number, UUID buyerId, UUID sellerId, UUID channelId, String title, String status, long total, Receiver receiver,
+    public record InternalOrder(UUID id, String number, UUID buyerId, UUID sellerId, UUID channelId, String title, String status, long total, long itemsTotal, Receiver receiver,
                                 Delivery shipping) {
 
         static InternalOrder of(Order o) {
             Order.Address a = o.getAddress();
             return new InternalOrder(o.getId(), "#" + o.getNumber(), o.getBuyerId(), o.getSellerId(), o.getChannelId(), o.getLines().isEmpty() ? null : o.getLines().get(0).title(), o.getStatus().name(),
-                    o.getItemsTotal() + o.getShippingTotal(),
+                    o.getItemsTotal() + o.getShippingTotal(), o.getItemsTotal(),
                     new Receiver(a.fullName(), a.phone(), a.street(), a.postalCode(), a.city()),
                     new Delivery(o.getShippingMethodId(), o.getPickupPointId(), o.getPickupPointLabel(), o.getShipmentId()));
         }

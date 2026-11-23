@@ -113,6 +113,10 @@ public class Order {
     @Column(name = "payment_id")
     private UUID paymentId;
 
+    /** Zaakceptowana w rozmowie propozycja ceny, po której kupiono (zużyta w chat-service). */
+    @Column(name = "price_offer_id")
+    private UUID priceOfferId;
+
     /** {@code false}: anulowanie czeka na przyjęcie przez payment-service (zwrot, zamknięcie płatności w toku). */
     @Column(name = "payment_notified")
     private boolean paymentNotified = true;
@@ -290,8 +294,17 @@ public class Order {
         this.updatedAt = now;
     }
 
-    /** Sprzedawca zwrócił pieniądze: zgłoszony zwrot jest przyjęty. Bez zgłoszenia (zwrot z własnej inicjatywy) nic się nie zmienia. */
-    void returnRefunded(Instant now) {
+    /** Sprzedawca zwrócił pieniądze: zgłoszony zwrot jest przyjęty. Zwrot całości bez zgłoszenia (z inicjatywy sprzedawcy) oznacza zamówienie wysłane lub zrealizowane jako zwrócone; zwrot częściowy nic nie zmienia. */
+    void returnRefunded(boolean full, Instant now) {
+        boolean noOpenReturn = returnStatus == null || returnStatus == ReturnStatus.REJECTED;
+        if (noOpenReturn && full && (status == OrderStatus.SHIPPED || status == OrderStatus.COMPLETED)) {
+            // Zwrot całości z inicjatywy sprzedawcy (także po odrzuceniu zgłoszenia): zamówienie dostaje ten sam znacznik „Pieniądze zwrócone” co przyjęty zwrot.
+            this.returnStatus = ReturnStatus.REFUNDED;
+            // Bez powodu i daty zgłoszenia: kupujący niczego nie zgłaszał (frontend pokazuje „zwrot z inicjatywy sprzedawcy”).
+            this.returnDecidedAt = now;
+            this.updatedAt = now;
+            return;
+        }
         if (returnStatus == ReturnStatus.REQUESTED) {
             this.returnStatus = ReturnStatus.REFUNDED;
             this.returnDecidedAt = now;
@@ -371,6 +384,14 @@ public class Order {
 
     public Address getAddress() {
         return new Address(addressId, fullName, phone, street, postalCode, city);
+    }
+
+    void usePriceOffer(UUID priceOfferId) {
+        this.priceOfferId = priceOfferId;
+    }
+
+    public UUID getPriceOfferId() {
+        return priceOfferId;
     }
 
     public UUID getPaymentId() {

@@ -30,6 +30,8 @@ rynek:
     url: ${IDENTITY_SERVICE_URL:http://localhost:8081}
   payment:
     url: ${PAYMENT_SERVICE_URL:http://localhost:8092}
+  chat:
+    url: ${CHAT_SERVICE_URL:http://localhost:8089}
   jwt:
     # Klucze publiczne pobierane leniwie przy pierwszym tokenie, więc serwis startuje bez działającego identity.
     jwk-set-uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}/internal/auth/jwks

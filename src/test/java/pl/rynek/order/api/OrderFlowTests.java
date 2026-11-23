@@ -108,6 +108,9 @@ class OrderFlowTests {
     @MockitoBean
     NotificationClient notifications;
 
+    @MockitoBean
+    pl.rynek.order.clients.ChatClient chat;
+
     final Map<UUID, OfferInfo> offers = new ConcurrentHashMap<>();
     final Map<UUID, Integer> stock = new ConcurrentHashMap<>();
     final Map<UUID, Integer> reservations = new ConcurrentHashMap<>();
@@ -167,7 +170,8 @@ class OrderFlowTests {
                 : Optional.empty());
         given(shipping.method(anyString())).willAnswer(call -> Map.of(
                 "inpost", new Method("inpost", "Paczkomat InPost", new Money(1299, "PLN"), "1–2 dni", true),
-                "courier", new Method("courier", "Kurier", new Money(1599, "PLN"), "1–2 dni", false)).entrySet().stream()
+                "courier", new Method("courier", "Kurier", new Money(1599, "PLN"), "1–2 dni", false),
+                "pickup", new Method("pickup", "Odbiór osobisty", new Money(0, "PLN"), "po umówieniu", false)).entrySet().stream()
                 .filter(e -> e.getKey().equals(call.getArgument(0))).map(Map.Entry::getValue).findFirst());
         given(shipping.pickupPoint(anyString())).willAnswer(call -> call.<String>getArgument(0).startsWith("WAW")
                 ? Optional.of(new PickupPoint(call.getArgument(0), "Paczkomat " + call.getArgument(0), "ul. Marszałkowska 104, Warszawa"))
@@ -269,6 +273,70 @@ class OrderFlowTests {
     }
 
     @Test
+    void agreedPriceFromChatAppliesToBuyNowForOneUnitAtMostTheCatalogPrice() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 10000, 5);
+        UUID cheaper = UUID.randomUUID();
+        UUID dearer = UUID.randomUUID();
+        given(chat.redeem(cheaper, buyer, drill)).willReturn(9000L);
+        given(chat.redeem(dearer, buyer, drill)).willReturn(12000L);
+
+        order(buyer, "p1", withPriceOffer(buyNow(buyer, drill, 1, "inpost", "WAW02M"), cheaper))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$[0].total.amount").value(9000 + 1299));
+        // Cena z rozmowy wyższa niż bieżąca katalogowa: płacisz niższą.
+        order(buyer, "p2", withPriceOffer(buyNow(buyer, drill, 1, "inpost", "WAW02M"), dearer))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$[0].total.amount").value(10000 + 1299));
+        // Uzgodniona cena dotyczy jednej sztuki i tylko „Kup teraz”.
+        order(buyer, "p3", withPriceOffer(buyNow(buyer, drill, 2, "inpost", "WAW02M"), cheaper)).andExpect(status().isUnprocessableContent());
+        order(buyer, "p4", withPriceOffer(fromCart(buyer), cheaper)).andExpect(status().isUnprocessableContent());
+        verify(chat, times(2)).redeem(any(), any(), any());
+    }
+
+    @Test
+    void chatRefusalStopsTheOrderAndFailedOrderGivesThePriceBack() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 10000, 1);
+        UUID used = UUID.randomUUID();
+        given(chat.redeem(used, buyer, drill)).willThrow(new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.CONFLICT, "Ta cena została już wykorzystana w zamówieniu."));
+        order(buyer, "r1", withPriceOffer(buyNow(buyer, drill, 1, "inpost", "WAW02M"), used))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.detail").value("Ta cena została już wykorzystana w zamówieniu."));
+        assertThat(stock).containsEntry(drill, 1);
+        verify(chat, never()).release(any());
+
+        // Cena zużyta, ale zamówienie się nie udało (brak sztuk po zmianie zapasu): cena wraca do użycia.
+        UUID fresh = UUID.randomUUID();
+        UUID empty = product(seller, 10000, 0);
+        given(chat.redeem(fresh, buyer, empty)).willReturn(9000L);
+        order(buyer, "r2", withPriceOffer(buyNow(buyer, empty, 1, "inpost", "WAW02M"), fresh)).andExpect(status().isConflict());
+        verify(chat).release(fresh);
+    }
+
+    @Test
+    void agreedPriceReturnsWhenUnpaidOrderIsCancelledButNotWhenPaid() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 10000, 5);
+        UUID unpaidOffer = UUID.randomUUID();
+        UUID paidOffer = UUID.randomUUID();
+        given(chat.redeem(any(), any(), any())).willReturn(9000L);
+
+        String unpaid = JsonPath.read(order(buyer, "c1", withPriceOffer(buyNow(buyer, drill, 1, "inpost", "WAW02M"), unpaidOffer))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$[0].id");
+        cancel(buyer, unpaid).andExpect(status().isOk());
+        verify(chat).release(unpaidOffer);
+
+        String paid = JsonPath.read(order(buyer, "c2", withPriceOffer(buyNow(buyer, drill, 1, "inpost", "WAW02M"), paidOffer))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + paid + "/mark-paid").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"paymentId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isOk());
+        cancel(buyer, paid).andExpect(status().isOk());
+        verify(chat, never()).release(paidOffer);
+    }
+
+    @Test
     void buyNowLifecycleFromPaymentToCompletion() throws Exception {
         UUID buyer = UUID.randomUUID();
         UUID seller = UUID.randomUUID();
@@ -307,7 +375,10 @@ class OrderFlowTests {
                 .andExpect(jsonPath("$.trackingNumber").value("6200000000001"));
         // Wysłanego nie można już anulować.
         cancel(buyer, id).andExpect(status().isConflict());
-        setStatus(seller, id, "Zrealizowane").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Zrealizowane"));
+        // Przesyłka z przewoźnikiem realizuje się sama po doręczeniu; sprzedawca nie robi tego ręcznie.
+        setStatus(seller, id, "Zrealizowane").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.startsWith("Zamówienie wysłane przesyłką zrealizuje się samo")));
+        carrierStatus(id, "DELIVERED").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Zrealizowane"));
         setStatus(seller, id, "Do wysłania").andExpect(status().isUnprocessableContent());
 
         mvc.perform(get("/api/v1/orders/" + id + "/timeline").header(HttpHeaders.AUTHORIZATION, bearer(seller)))
@@ -317,6 +388,59 @@ class OrderFlowTests {
         mvc.perform(get("/api/v1/seller/orders").param("status", "W drodze").header(HttpHeaders.AUTHORIZATION, bearer(seller)))
                 .andExpect(jsonPath("$.items", hasSize(0)));
         assertThat(stock).containsEntry(drill, 0);
+    }
+
+    @Test
+    void fullRefundOfShippedOrderMarksItRefundedButPartialDoesNot() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 10000, 2);
+        String id = JsonPath.read(order(buyer, "rf1", buyNow(buyer, drill, 1, "inpost", "WAW02M")).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"paymentId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isOk());
+        ship(seller, id, "{\"trackingNumber\":\"6200000000009\"}").andExpect(status().isOk());
+
+        mvc.perform(post("/internal/orders/" + id + "/refunded").param("full", "false")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(buyer))).andExpect(jsonPath("$.returnRequest").doesNotExist());
+        mvc.perform(post("/internal/orders/" + id + "/refunded").param("full", "true")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(buyer)))
+                .andExpect(jsonPath("$.returnRequest.status").value("Pieniądze zwrócone"));
+    }
+
+    @Test
+    void sellerRefundAfterRejectedReturnMarksOrderRefunded() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 10000, 2);
+        String id = JsonPath.read(order(buyer, "rr1", buyNow(buyer, drill, 1, "inpost", "WAW02M")).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"paymentId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isOk());
+        ship(seller, id, "{\"trackingNumber\":\"6200000000010\"}").andExpect(status().isOk());
+        carrierStatus(id, "DELIVERED").andExpect(status().isOk());
+        requestReturn(buyer, id, "Nie działa").andExpect(status().isOk());
+        rejectReturn(seller, id, "Telefon działa poprawnie").andExpect(status().isOk());
+        mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(buyer)))
+                .andExpect(jsonPath("$.returnRequest.status").value("Odrzucony"));
+
+        // Sprzedawca mimo to oddaje całość: zamówienie przestaje mówić „Odrzucony”.
+        mvc.perform(post("/internal/orders/" + id + "/refunded").param("full", "true")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/orders/" + id).header(HttpHeaders.AUTHORIZATION, bearer(buyer)))
+                .andExpect(jsonPath("$.returnRequest.status").value("Pieniądze zwrócone"));
+    }
+
+    @Test
+    void sellerCompletesPersonalPickupOrderManually() throws Exception {
+        UUID buyer = UUID.randomUUID();
+        UUID seller = UUID.randomUUID();
+        UUID drill = product(seller, 10000, 2);
+        String id = JsonPath.read(order(buyer, "pk1", buyNow(buyer, drill, 1, "pickup", null)).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "$[0].id");
+        mvc.perform(post("/internal/orders/" + id + "/mark-paid").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"paymentId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isOk());
+        ship(seller, id, "{\"trackingNumber\":\"odbior\"}").andExpect(status().isOk());
+        setStatus(seller, id, "Zrealizowane").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("Zrealizowane"));
     }
 
     @Test
@@ -683,6 +807,10 @@ class OrderFlowTests {
     private ResultActions cancel(UUID user, String orderId) throws Exception {
         return mvc.perform(post("/api/v1/orders/" + orderId + "/cancel").header(HttpHeaders.AUTHORIZATION, bearer(user))
                 .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"Rozmyśliłem się\"}"));
+    }
+
+    private static String withPriceOffer(String json, UUID priceOfferId) {
+        return json.substring(0, json.length() - 1) + ",\"priceOfferId\":\"" + priceOfferId + "\"}";
     }
 
     private static String fromCart(UUID buyer) {

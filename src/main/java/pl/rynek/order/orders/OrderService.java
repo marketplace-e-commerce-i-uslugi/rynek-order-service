@@ -29,6 +29,7 @@ import pl.rynek.order.clients.CartClient;
 import pl.rynek.order.clients.CartClient.CartSnapshot;
 import pl.rynek.order.clients.CatalogClient;
 import pl.rynek.order.clients.CatalogClient.OfferInfo;
+import pl.rynek.order.clients.ChatClient;
 import pl.rynek.order.clients.IdentityClient;
 import pl.rynek.order.clients.PaymentClient;
 import pl.rynek.order.clients.ShippingClient;
@@ -53,6 +54,7 @@ public class OrderService {
     private final IdentityClient identity;
     private final ShippingClient shipping;
     private final PaymentClient payment;
+    private final ChatClient chat;
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     private final OrderNotifications notices;
@@ -62,11 +64,12 @@ public class OrderService {
     private final Duration returnWindow;
 
     public OrderService(OrderRepository orders, OrderRequestRepository requests, CatalogClient catalog, CartClient cart,
-                        IdentityClient identity, ShippingClient shipping, PaymentClient payment, OrderNotifications notices,
+                        IdentityClient identity, ShippingClient shipping, PaymentClient payment, ChatClient chat, OrderNotifications notices,
                         PlatformTransactionManager transactions, Clock clock,
                         @Value("${rynek.orders.payment-timeout:30m}") Duration paymentTimeout,
                         @Value("${rynek.orders.return-window:14d}") Duration returnWindow) {
         this.orders = orders;
+        this.chat = chat;
         this.requests = requests;
         this.catalog = catalog;
         this.cart = cart;
@@ -92,17 +95,26 @@ public class OrderService {
         Order.Address address = identity.address(buyerId, request.addressId())
                 .map(a -> new Order.Address(a.id(), a.fullName(), a.phone(), a.street(), a.postalCode(), a.city()))
                 .orElseThrow(() -> unprocessable("Wybierz adres dostawy."));
-        List<Package> packages = "BUY_NOW".equals(request.source()) ? buyNow(buyerId, request) : fromCart(buyerId);
+        UUID usedPriceOffer = null;
+        Long agreedPrice = null;
+        if (request.priceOfferId() != null) {
+            if (!"BUY_NOW".equals(request.source()) || (request.quantity() != null && request.quantity() != 1) || request.offerId() == null) {
+                throw unprocessable("Cenę uzgodnioną w rozmowie zastosujesz tylko przy „Kup teraz” dla jednej sztuki.");
+            }
+            agreedPrice = chat.redeem(request.priceOfferId(), buyerId, request.offerId());
+            usedPriceOffer = request.priceOfferId();
+        }
 
         List<Line> reserved = new ArrayList<>();
         try {
+            List<Package> packages = "BUY_NOW".equals(request.source()) ? buyNow(buyerId, request, agreedPrice) : fromCart(buyerId);
             for (Package p : packages) {
                 for (Line line : p.lines()) {
                     catalog.reserve(line.offerId(), line.id(), line.quantity(), line.title());
                     reserved.add(line);
                 }
             }
-            List<Order> created = save(buyerId, idempotencyKey, packages, address);
+            List<Order> created = save(buyerId, idempotencyKey, packages, address, usedPriceOffer);
             if ("CART".equals(request.source())) {
                 cart.removeOffers(buyerId, packages.stream().flatMap(p -> p.lines().stream()).map(Line::offerId).toList());
             }
@@ -110,9 +122,16 @@ public class OrderService {
         } catch (DataIntegrityViolationException e) {
             release(reserved);
             // Ten sam klucz zapisał właśnie równoległy request: zwracamy jego zamówienia.
-            return earlier(buyerId, idempotencyKey).orElseThrow(() -> e);
+            Optional<List<Order>> concurrent = earlier(buyerId, idempotencyKey);
+            if (concurrent.isEmpty() && usedPriceOffer != null) {
+                chat.release(usedPriceOffer);
+            }
+            return concurrent.orElseThrow(() -> e);
         } catch (RuntimeException e) {
             release(reserved);
+            if (usedPriceOffer != null) {
+                chat.release(usedPriceOffer);
+            }
             throw e;
         }
     }
@@ -150,6 +169,11 @@ public class OrderService {
         Predicate<Order> own = o -> o.getSellerId().equals(sellerId);
         return switch (status) {
             case COMPLETED -> {
+                // Przesyłka z przewoźnikiem realizuje się sama po doręczeniu (shipping-service); ręcznie tylko odbiór osobisty.
+                if (!"pickup".equals(find(orderId, own).getShippingMethodId())) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT,
+                            "Zamówienie wysłane przesyłką zrealizuje się samo po doręczeniu. Ręcznie realizujesz tylko odbiór osobisty.");
+                }
                 Order completed = change(orderId, own, o -> o.complete(clock.instant()));
                 notices.completed(completed);
                 yield completed;
@@ -191,8 +215,8 @@ public class OrderService {
     }
 
     /** payment-service zwrócił pieniądze za zamówienie: zgłoszony zwrot jest przyjęty. Ponowienie niczego nie zmienia. */
-    public Order refunded(UUID orderId) {
-        Order order = change(orderId, o -> true, o -> o.returnRefunded(clock.instant()));
+    public Order refunded(UUID orderId, boolean full) {
+        Order order = change(orderId, o -> true, o -> o.returnRefunded(full, clock.instant()));
         notices.refunded(order);
         return order.isReturnStockPending() ? restoreReturnedStock(orderId) : order;
     }
@@ -296,6 +320,10 @@ public class OrderService {
     private Order cancel(UUID orderId, Predicate<Order> allowed) {
         Order cancelled = change(orderId, allowed, o -> o.cancel(clock.instant()));
         release(cancelled.getLines());
+        // Cena z rozmowy jest wykorzystana dopiero po opłaceniu: anulowane albo wygasłe nieopłacone zamówienie oddaje ją kupującemu.
+        if (cancelled.getPriceOfferId() != null && cancelled.getPaymentId() == null) {
+            chat.release(cancelled.getPriceOfferId());
+        }
         notifyPayment(cancelled.getId());
         return notifyShipping(cancelled.getId());
     }
@@ -365,19 +393,23 @@ public class OrderService {
         }));
     }
 
-    private List<Order> save(UUID buyerId, String idempotencyKey, List<Package> packages, Order.Address address) {
+    private List<Order> save(UUID buyerId, String idempotencyKey, List<Package> packages, Order.Address address, UUID priceOfferId) {
         return transaction.execute(status -> {
             Instant now = clock.instant();
             List<Order> created = packages.stream()
                     .map(p -> new Order(orders.nextNumber(), buyerId, p.sellerId(), p.channelId(), p.lines(), p.shipping(), address, now))
                     .toList();
+            if (priceOfferId != null) {
+                created.forEach(o -> o.usePriceOffer(priceOfferId));
+            }
             orders.saveAll(created);
             requests.saveAndFlush(new OrderRequest(buyerId, idempotencyKey, created.stream().map(Order::getId).toList(), now));
             return created;
         });
     }
 
-    private List<Package> buyNow(UUID buyerId, CreateOrderRequest request) {
+    /** {@code agreedPrice}: cena z zaakceptowanej propozycji w rozmowie; kupujący płaci niższą z niej i bieżącej ceny oferty. */
+    private List<Package> buyNow(UUID buyerId, CreateOrderRequest request, Long agreedPrice) {
         if (request.offerId() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Podaj ofertę.");
         }
@@ -388,7 +420,8 @@ public class OrderService {
         }
         requirePurchasable(buyerId, offer, quantity);
         String methodId = request.shippingMethodId() == null ? ShippingClient.DEFAULT_METHOD : request.shippingMethodId();
-        return List.of(new Package(offer.ownerId(), offer.channelId(), List.of(line(offer, quantity)),
+        long price = agreedPrice == null ? offer.price().amount() : Math.min(agreedPrice, offer.price().amount());
+        return List.of(new Package(offer.ownerId(), offer.channelId(), List.of(line(offer, quantity, price)),
                 shippingFor(methodId, request.pickupPointId())));
     }
 
@@ -455,7 +488,11 @@ public class OrderService {
     }
 
     private static Line line(OfferInfo offer, int quantity) {
-        return new Line(UUID.randomUUID(), offer.offerId(), offer.title(), quantity, offer.price().amount());
+        return line(offer, quantity, offer.price().amount());
+    }
+
+    private static Line line(OfferInfo offer, int quantity, long unitPrice) {
+        return new Line(UUID.randomUUID(), offer.offerId(), offer.title(), quantity, unitPrice);
     }
 
     private void release(List<Line> lines) {
